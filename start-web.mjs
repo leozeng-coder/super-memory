@@ -78,20 +78,54 @@ async function isWebReady() {
   }
 }
 
-function startDetached(command, args, stdoutName, stderrName) {
+function startManaged(command, args, stdoutName, stderrName) {
   const stdout = openSync(path.join(logRoot, stdoutName), "w");
   const stderr = openSync(path.join(logRoot, stderrName), "w");
   const child = spawn(command, args, {
     cwd: webRoot,
-    detached: true,
+    detached: false,
     env: childEnvironment,
     windowsHide: true,
     stdio: ["ignore", stdout, stderr],
   });
-  child.unref();
   closeSync(stdout);
   closeSync(stderr);
   return child;
+}
+
+function stopProcess(child) {
+  if (child && child.exitCode === null && !child.killed) {
+    child.kill();
+  }
+}
+
+function supervise(processes) {
+  return new Promise((resolve, reject) => {
+    let stopping = false;
+    const stopAll = () => {
+      if (stopping) return;
+      stopping = true;
+      for (const child of processes) stopProcess(child);
+      resolve();
+    };
+
+    process.once("SIGINT", stopAll);
+    process.once("SIGTERM", stopAll);
+    for (const child of processes) {
+      child.once("exit", (code, signal) => {
+        if (stopping) return;
+        stopping = true;
+        for (const sibling of processes) {
+          if (sibling !== child) stopProcess(sibling);
+        }
+        reject(
+          new Error(
+            `管理台进程意外退出（code=${code ?? "none"}, signal=${signal ?? "none"}），请查看日志目录：${logRoot}`,
+          ),
+        );
+      });
+    }
+  });
 }
 
 function openBrowser() {
@@ -127,7 +161,7 @@ let apiProcess = null;
 let webProcess = null;
 
 if (!apiReady) {
-  apiProcess = startDetached(
+  apiProcess = startManaged(
     process.execPath,
     [apiScript],
     "api.log",
@@ -136,7 +170,7 @@ if (!apiReady) {
 }
 
 if (!webReady) {
-  webProcess = startDetached(
+  webProcess = startManaged(
     process.execPath,
     [nextCli, "dev", "-H", "127.0.0.1", "-p", String(webPort)],
     "web.log",
@@ -150,6 +184,9 @@ while (Date.now() < deadline) {
   if (apiReady && webReady) {
     console.log(`启动成功，正在打开：${pageUrl}`);
     openBrowser();
+    console.log("Super Memory 正在运行。请保持此窗口打开；按 Ctrl+C 可停止本次启动的服务。");
+    await supervise([apiProcess, webProcess].filter(Boolean));
+    console.log("Super Memory 已停止。");
     process.exit(0);
   }
   if (apiProcess?.exitCode !== null && !apiReady) {

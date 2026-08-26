@@ -1,4 +1,6 @@
 @echo off
+chcp 65001 >nul
+title Super Memory
 node "%~dp0start-web.mjs"
 if errorlevel 1 (
   echo.
