@@ -1,0 +1,6 @@
+interface:
+  display_name: "Super Memory"
+  short_description: "把人工代码审查沉淀为可审核、可检索的开发规则记忆"
+  default_prompt: "使用 $super-memory 分析这次代码审查差异，并用中文生成待审核的开发记忆草案。"
+policy:
+  allow_implicit_invocation: true

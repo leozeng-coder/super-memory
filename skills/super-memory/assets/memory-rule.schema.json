@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "memory-rule.schema.json",
+  "title": "开发持久化记忆规则",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "type",
+    "title",
+    "status",
+    "priority",
+    "confidence",
+    "scope",
+    "trigger",
+    "instruction",
+    "rationale",
+    "exceptions",
+    "relations",
+    "evidence",
+    "lifecycle",
+    "tags"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^RULE-[A-Z0-9][A-Z0-9-]*$"
+    },
+    "type": {
+      "const": "Rule"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "candidate",
+        "active",
+        "suspect",
+        "deprecated",
+        "superseded",
+        "archived"
+      ]
+    },
+    "priority": {
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "scope": {
+      "type": "object",
+      "required": ["level", "languages", "technologies", "projects", "modules"],
+      "properties": {
+        "level": {
+          "enum": ["global", "language", "technology", "project", "module"]
+        },
+        "languages": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "technologies": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "projects": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true,
+          "maxItems": 1
+        },
+        "modules": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true,
+          "maxItems": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"modules": {"minItems": 1}}},
+          "then": {
+            "properties": {
+              "level": {"const": "module"},
+              "projects": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "projects": {"minItems": 1},
+              "modules": {"maxItems": 0}
+            }
+          },
+          "then": {"properties": {"level": {"const": "project"}}}
+        }
+      ]
+    },
+    "trigger": {
+      "type": "object",
+      "required": ["description", "keywords"],
+      "properties": {
+        "description": {"type": "string", "minLength": 1},
+        "keywords": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "instruction": {
+      "type": "object",
+      "required": ["do", "avoid"],
+      "properties": {
+        "do": {"type": "string", "minLength": 1},
+        "avoid": {"type": "string", "minLength": 1}
+      }
+    },
+    "rationale": {
+      "type": "object",
+      "required": ["problem", "root_cause"],
+      "properties": {
+        "problem": {"type": "string", "minLength": 1},
+        "root_cause": {"type": "string", "minLength": 1}
+      }
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["condition", "requirement"],
+        "properties": {
+          "condition": {"type": "string"},
+          "requirement": {"type": "string"}
+        }
+      }
+    },
+    "relations": {
+      "type": "object",
+      "properties": {
+        "conflicts_with": {"type": "array", "items": {"type": "string"}},
+        "supersedes": {"type": "array", "items": {"type": "string"}},
+        "replacement": {"type": ["string", "null"]}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "summary", "observed_at"],
+        "properties": {
+          "id": {"type": "string"},
+          "source": {
+            "enum": ["human-code-review", "git-diff", "test-failure", "incident", "user-instruction"]
+          },
+          "summary": {"type": "string", "minLength": 1},
+          "project": {"type": ["string", "null"]},
+          "commit": {"type": ["string", "null"]},
+          "files": {"type": "array", "items": {"type": "string"}},
+          "observed_at": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "required": ["created_at", "last_validated_at", "review_after"],
+      "properties": {
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": ["string", "null"], "format": "date-time"},
+        "last_validated_at": {"type": ["string", "null"], "format": "date-time"},
+        "review_after": {"type": ["string", "null"], "format": "date-time"},
+        "success_count": {"type": "integer", "minimum": 0},
+        "violation_count": {"type": "integer", "minimum": 0},
+        "exception_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    }
+  }
+}

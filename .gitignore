@@ -1,0 +1,35 @@
+# 本地记忆数据（只保留在当前机器）
+/memory.config.json
+/graph/
+/history/
+/indexes/
+/schemas/
+/logs/
+/memory-data/
+/.super-memory-data/
+
+# 本机环境配置
+.env
+.env.*
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/*.tmp
+
+# Node / Next.js
+**/node_modules/
+**/.next/
+**/out/
+**/dist/
+**/.local-logs/
+**/*.tsbuildinfo
+
+# 旧的本地仓库元数据不得进入新历史
+**/.git-disabled/
+
+# 编辑器和系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,25 @@
+{
+  "name": "super-memory",
+  "version": "0.1.0",
+  "description": "基于人工审查证据维护可审核、可检索的本地开发规则记忆。",
+  "author": {
+    "name": "Super Memory Contributors"
+  },
+  "license": "MIT",
+  "keywords": ["codex", "memory", "code-review", "knowledge-graph"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Super Memory",
+    "shortDescription": "将人工代码审查沉淀为可审核的本地开发记忆",
+    "longDescription": "从代码审查、故障和测试证据中提炼候选规则，经用户确认后保存，并通过本地知识图谱管理。规则数据始终保存在用户自己的目录中。",
+    "developerName": "Super Memory Contributors",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "检查本次代码修改是否命中已有开发规则。",
+      "复盘这次人工审查意见，并生成待审核的记忆草案。",
+      "检索与当前编码任务最相关的生效规则。"
+    ],
+    "brandColor": "#2563EB"
+  }
+}
