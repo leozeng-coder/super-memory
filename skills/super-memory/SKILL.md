@@ -1,44 +1,45 @@
 ---
 name: super-memory
-description: 在开发任务中检索并应用规则，根据人工纠正、Git 差异、测试或故障证据复盘，经用户审核后保存开发经验，并维护规则生命周期。Codex 与本地管理台共用一个规则库。不要用于保存秘密、完整源码或闲聊事实。
+description: 在开发任务中检索并应用规则，根据人工纠正、差异、测试或故障证据复盘，经用户审核后保存开发经验，并维护规则生命周期。Codex 与本地管理台共用一个规则库。不要用于保存秘密、完整源码或闲聊事实。
 ---
 
 # Super Memory
 
 面向用户的说明、规则正文、证据摘要和事件原因使用中文；程序字段、命令和代码标识符可保留英文。维护记忆时不得修改业务源码，除非用户已授权该代码任务。
 
-## 日常开发：检索、应用、自检
+## 日常开发
 
-在代码生成、修改、调试或审查开始时识别项目、模块、语言和具体操作，使用 `retrieve --format context` 读取匹配规则的完整要求、触发条件、例外、冲突关系和来源。
+代码生成、修改、调试或审查开始时，识别项目、模块、语言及具体操作，检索适用规则：
 
 ```powershell
-python "<SKILL_ROOT>/scripts/memory_cli.py" retrieve --query "异步回调 shared_ptr 生命周期" --project server --module svr_scene --language cpp --format context
+python "<SKILL_ROOT>/scripts/memory.py" search --query "异步回调 shared_ptr 生命周期" --project server --module svr_scene --language cpp
 ```
 
-- 项目和模块使用库中实际的 ID；示例不是默认值。作用域放在独立参数中，查询词描述具体操作、技术或符号。`--module`、`--language`、`--technology` 可重复传入。
-- 未提供的作用域不会自动推断；跨项目探索的结果须先确认适用。已指定项目但模块未知时，仅返回项目及更广范围的规则。
-- 依次遵循用户当前明确指令、模块、项目、技术或语言、全局规则。候选规则仅供参考；冲突须结合范围、例外和替代关系判断，不能按检索分数决定。
-- 完成后对照已加载规则自检。同一任务范围内复用结果，处理新模块或技术时补充检索。无匹配时安静继续；检索失败或存在遗漏提示时先排查或调整查询，不能把错误当作“没有规则”。
+- 项目和模块使用库中实际 ID，示例不是默认值。查询描述操作、技术或符号，作用域放在独立参数中；`--module`、`--language`、`--technology` 可重复。
+- `search` 只返回一种结构化结果：完整要求、触发条件、例外、冲突关系、来源和内容版本号 `revision`。支持语言别名和中文句子；项目、模块不作为相关度加分项。
+- 未提供的作用域不会自动推断。已指定项目但模块未知时，仅返回项目及更广范围的规则；跨项目探索的结果须先确认适用。
+- 依次遵循用户当前明确指令、模块、项目、技术或语言、全局规则。候选规则仅供参考；冲突结合范围、例外和替代关系判断，不能按检索分数决定。
+- 完成后对照规则自检。同一任务范围内复用结果，新模块或技术补充检索。无匹配时安静继续；失败和遗漏不能当作“没有规则”。
 
-检索支持 `C++/cpp/cxx` 等别名和中文句子。默认最多 8 条普通规则，context 输出预算 16000 字符；可调整 `--limit`、`--max-chars`。正文和例外不截断，遗漏数量会明确报告。
-
-只有用户明确确认某规则在其范围内始终适用时，才设置 `trigger.always_apply: true`。此类 active 规则仍受作用域过滤；完整上下文确认适用后不受普通数量上限影响，字符预算不足时报错，须增大预算。
+默认最多 8 条普通规则，输出预算 16000 字符，可用 `--limit`、`--max-chars` 调整。`omitted_count` 和 `warnings` 说明遗漏，正文与例外不截断。只有用户确认规则在其范围内始终适用时才设置 `trigger.always_apply: true`；完整上下文确认适用后，此类 active 规则不受普通数量上限影响，字符预算不足时报错。
 
 ## 定位与唯一事实源
 
-`SKILL_ROOT` 是本文件所在目录，所有操作调用其 `scripts/memory_cli.py`。数据目录依次取 `--memory-root`、`SUPER_MEMORY_HOME`、含 `memory.config.json` 的 Skill 源码检出根目录、用户目录下的 `.super-memory`。context 输出包含实际目录。出现未初始化错误时，先核对管理台使用的目录，确认是新库后运行 `init`，避免误建第二套记忆。
+`SKILL_ROOT` 为本文件所在目录。唯一命令入口是 `scripts/memory.py`；`info` 显示实际数据目录且不初始化。
 
-- `graph/rules/active`、`candidate`、`archive` 内的 JSON 是唯一事实数据。检索读取当前规则；`indexes/rules.json` 可重建；`trash` 不参与校验、索引和检索。
-- Skill、CLI 和管理台共用数据目录与保存入口，不建立同步副本。源码检出中的本地规则、配置、索引和日志必须由 `.gitignore` 排除。
+数据目录依次取 `--root`、`SUPER_MEMORY_HOME`、含 `memory.config.json` 的 Skill 源码检出根目录、用户目录下 `.super-memory`。未初始化时先核对管理台目录，确认是新库后运行 `init`，避免误建第二套记忆。
+
+- `graph/rules/active`、`candidate`、`archive` 中的 JSON 是唯一规则事实；检索读取当前文件，`indexes/rules.json` 可重建，`trash` 不参与校验、索引和检索。
+- Skill、CLI 和管理台共用目录与业务服务，不创建同步副本。本地规则、配置、日志和索引由 `.gitignore` 排除。
 - 不把这些开发规则写入或读取 Codex 原生 `$CODEX_HOME/memories`、`MEMORY.md`、`rollout_summaries` 或 `extensions/ad_hoc/notes`。
 
-## 有纠正证据时：复盘与审核
+## 有纠正证据时复盘
 
 用户提供人工修改差异、明确审查理由，编译/测试/故障证明生成内容有可复现问题，相同错误再次出现，或用户要求沉淀经验时，在任务结束前复盘。
 
-1. 区分事实与推断，不臆测修改原因。区分需求变化、缺陷修正、项目约定、等价重构和原因未知。临时需求、无理由偏好、格式变化或一次性兼容处理不自动沉淀。
-2. 先检索已有 active 和 candidate（`--include-candidates --format context`），优先补充证据或修正规则，避免重复创建。
-3. 自动建议按下表评分：总分至少 6 分且证据强度为 2 分才发起审核；不足时仅在当前任务需要解释时简述。用户明确要求保存的长期约定按其指令处理，不用评分否决明确授权。
+1. 区分事实与推断，不臆测原因。区分需求变化、缺陷修正、项目约定、等价重构和原因未知。临时需求、无理由偏好、格式变化或一次性兼容处理不自动沉淀。
+2. 用 `search --include-candidates` 检索已有规则，优先补充证据或修正规则，避免重复创建。
+3. 自动建议按下表评分：总分至少 6 分且证据强度为 2 分才发起审核。用户明确要求保存的长期约定按其指令处理，不用评分否决明确授权。
 
 | 维度 | 0 分 | 1 分 | 2 分 |
 |---|---|---|---|
@@ -47,23 +48,23 @@ python "<SKILL_ROOT>/scripts/memory_cli.py" retrieve --query "异步回调 share
 | 泛化能力 | 仅单次修改 | 同模块同类场景 | 有清晰可复用条件和边界 |
 | 证据强度 | 猜测 | 有差异但原因不确定 | 明确审查理由、复现证据或用户明确约定 |
 
-4. 写规则前给出中文草案，以“检测到值得沉淀的开发经验，建议进行持久化记忆审核”开头，包含事实、原因、范围、例外、评分、证据和建议状态。提供 `保存为 active`、`保存为 candidate`、`不保存`，允许修改草案。
-5. 用户明确选择后，把完整规则写入临时 JSON 并调用 `save`。同一草案及状态已有明确确认时直接执行，不重复询问；没有答复不能视为同意。只保存抽象规则和必要证据引用，不保存秘密或完整源码。
+4. 写入前给出中文草案，以“检测到值得沉淀的开发经验，建议进行持久化记忆审核”开头，包含事实、原因、范围、例外、评分、证据和建议状态。提供 `保存为 active`、`保存为 candidate`、`不保存`，允许修改。
+5. 用户明确选择后，在完整规则 JSON 中设置对应 `status`，再执行新增或更新。同一草案及状态已有确认时直接执行，不重复询问；没有答复不能视为同意。只保存抽象规则和必要证据引用，不保存秘密或完整源码。
 
-## 保存与维护
+## 新增、更新和维护
 
-规则遵循 Skill 的 `assets/memory-rule.schema.json`，初始化会复制到数据目录的 `schemas/`。规则 ID 不可变，证据 ID 唯一。更新会合并旧证据；已有证据不可覆盖，纠正时使用新证据 ID 追加修正说明。
+规则由 `assets/memory-rule.schema.json` 定义并直接校验，不复制 Schema 到数据目录。规则 ID 不可变，证据按 ID 合并；旧证据不可覆盖，纠正时用新 ID 追加修正说明。
 
 ```powershell
-python "<SKILL_ROOT>/scripts/memory_cli.py" save --input "<规则草案.json>" --status active --actor user --reason "用户明确选择保存为 active"
-python "<SKILL_ROOT>/scripts/memory_cli.py" validate
-python "<SKILL_ROOT>/scripts/memory_cli.py" reindex
+python "<SKILL_ROOT>/scripts/memory.py" create --input "<完整规则.json>" --reason "用户确认新增生效规则"
+python "<SKILL_ROOT>/scripts/memory.py" get RULE-EXAMPLE
+python "<SKILL_ROOT>/scripts/memory.py" update RULE-EXAMPLE --revision "<读取时的 revision>" --input "<完整规则.json>" --reason "用户确认更新规则"
 ```
 
-更新时从读取结果取得 `updated_at`，传入 `--expected-updated-at`（没有时间时传 `null`）。版本冲突后重新读取、合并，并确认原授权仍覆盖修改；不要绕过检查直接覆盖。管理台编辑自动检查版本。
-
-CLI 与管理台读写共享进程锁，保存使用单文件原子替换，操作异常时恢复规则、索引和事件。`save --mode create/update` 限制新增或更新；`list --export` 导出快照，`import` 一次提交整批规则，`delete` 移入回收区。不要手工编辑以绕过证据或版本检查。
-
-维护时检查重复、冲突和适用范围；有新事实依据时才调整置信度及成功/违反/例外计数。`last_validated_at` 表示实践验证时间，保存和结构校验不会自动刷新；`review_after` 到期表示需要复查，不表示自动失效。
-
-经确认后可用 `save --status deprecated`、`superseded` 或 `archived` 保存完整规则。替换时旧规则填写 `relations.replacement`，新规则填写 `relations.supersedes`，保留证据和历史。`history/events.jsonl` 记录操作事件；实践观察须有中文原因及证据，不能把检索命中当作验证成功。
+- 更新前用 `get` 读取完整规则和 `revision`。更新、删除必须传入该版本号；冲突时重新读取、合并并核对原授权，不绕过检查。管理台自动携带版本号。
+- `list` 一次返回带版本的完整规则和作用域；`export --output <文件>` 直接写 UTF-8 JSON；`import --input <文件> --conflict skip|replace --reason <中文原因>` 原子提交整批导入；`delete <ID> --revision <版本> --reason <原因>` 移入回收区。
+- CLI 通过 JSON 标准输入或 `--input` 文件接收规则，成功输出 JSON，业务失败在标准错误输出结构化错误。具体参数用子命令 `--help` 查询。
+- 读写使用进程锁；事务日志记录原数据，操作异常会恢复，进程中断后下次访问先恢复未完成事务。不要手工编辑以绕过证据、版本或事务检查。
+- `validate` 校验规则与配置，`reindex` 重建派生索引。冲突与替代关系仍须结合事实审核，不能将结构校验当作语义验证。
+- 有事实依据时才调整置信度和成功/违反/例外计数。`last_validated_at` 表示实践验证时间，保存不刷新；`review_after` 到期表示需要复查，不自动失效。
+- 经确认后，更新规则 JSON 的 `status` 完成弃用、替换或归档。替换时旧规则填写 `relations.replacement`，新规则填写 `relations.supersedes`。保留证据和历史；检索命中不等于验证成功。

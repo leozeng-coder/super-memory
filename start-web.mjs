@@ -1,9 +1,9 @@
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { createHash } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { MemoryClient } from "./web/memory-client.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.join(root, "web");
@@ -11,12 +11,8 @@ const packageFile = path.join(webRoot, "package.json");
 const nodeModules = path.join(webRoot, "node_modules");
 const nextCli = path.join(nodeModules, "next", "dist", "bin", "next");
 const apiScript = path.join(webRoot, "local-api.mjs");
-const memoryRoot = path.resolve(
-  process.env.SUPER_MEMORY_HOME ||
-    (existsSync(path.join(root, "memory.config.json"))
-      ? root
-      : path.join(os.homedir(), ".super-memory")),
-);
+const memoryClient = new MemoryClient(path.join(root, "skills", "super-memory", "scripts", "memory.py"));
+const memoryRoot = (await memoryClient.run("info")).memory_root;
 const apiPort = Number(process.env.SUPER_MEMORY_API_PORT || 4318);
 const webPort = Number(process.env.SUPER_MEMORY_WEB_PORT || 3000);
 const apiBaseUrl = `http://127.0.0.1:${apiPort}`;
@@ -62,6 +58,7 @@ async function isApiReady() {
       response.ok &&
       result.ok === true &&
       result.app === "super-memory" &&
+      result.apiVersion === 2 &&
       result.memoryId === memoryId
     );
   } catch {

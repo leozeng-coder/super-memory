@@ -5,195 +5,125 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { sampleRule } from "./api-fixture.mjs";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const apiScript = path.join(projectRoot, "web", "local-api.mjs");
+const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+let nextPort = 44000 + process.pid % 1000;
 
-function sampleRule() {
-  return {
-    id: "RULE-SUPER-MEMORY-SMOKE",
-    type: "Rule",
-    title: "修改后运行相关测试",
-    status: "active",
-    priority: "high",
-    confidence: 0.9,
-    scope: {
-      level: "global",
-      languages: ["JavaScript"],
-      technologies: ["Node.js"],
-      projects: [],
-      modules: [],
-    },
-    trigger: {
-      description: "修改本地接口后需要验证读写流程",
-      keywords: ["api", "test"],
-    },
-    instruction: {
-      do: "运行与修改相关的接口测试。",
-      avoid: "不要在未验证时交付修改。",
-    },
-    rationale: {
-      problem: "未验证的接口修改可能破坏规则读写。",
-      root_cause: "缺少端到端验证。",
-    },
-    exceptions: [],
-    relations: {
-      conflicts_with: [],
-      supersedes: [],
-      replacement: null,
-    },
-    evidence: [
-      {
-        id: "EVIDENCE-SMOKE-1",
-        source: "user-instruction",
-        summary: "自动化测试验证本地接口的新增、导出、删除和导入。",
-        project: null,
-        commit: null,
-        files: [],
-        observed_at: "2026-08-26T00:00:00+00:00",
-      },
-    ],
-    lifecycle: {
-      created_at: "2026-08-26T00:00:00+00:00",
-      updated_at: null,
-      last_validated_at: null,
-      review_after: null,
-      success_count: 0,
-      violation_count: 0,
-      exception_count: 0,
-    },
-    tags: ["接口", "测试"],
-  };
-}
-
-async function waitForApi(baseUrl, child, output) {
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`API 提前退出：${output.join("")}`);
-    try {
-      const response = await fetch(`${baseUrl}/api/health`);
-      if (response.ok) return await response.json();
-    } catch {
-      // 服务仍在启动。
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`等待 API 超时：${output.join("")}`);
-}
-
-test("本地 API 共用一套规则并支持导入导出", async () => {
+async function withApi(action) {
   const memoryRoot = await mkdtemp(path.join(os.tmpdir(), "super-memory-api-"));
-  const port = 44000 + (process.pid % 1000);
-  const baseUrl = `http://127.0.0.1:${port}`;
+  const port = nextPort++;
+  const base = "http://127.0.0.1:" + port;
   const output = [];
-  const child = spawn(process.execPath, [apiScript], {
-    env: {
-      ...process.env,
-      SUPER_MEMORY_HOME: memoryRoot,
-      SUPER_MEMORY_API_PORT: String(port),
-      SUPER_MEMORY_WEB_PORT: "3000",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
+  const child = spawn(process.execPath, [path.join(project, "web/local-api.mjs")], {
+    env: { ...process.env, SUPER_MEMORY_HOME: memoryRoot, SUPER_MEMORY_API_PORT: String(port), SUPER_MEMORY_WEB_PORT: "3000" },
     windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let startupError;
+  child.on("error", (error) => { startupError = error; });
   child.stdout.on("data", (chunk) => output.push(chunk.toString()));
   child.stderr.on("data", (chunk) => output.push(chunk.toString()));
-
+  async function request(method, route, body, revision) {
+    const response = await fetch(base + route, {
+      method,
+      headers: { "Content-Type": "application/json", ...(revision ? { "If-Match": revision } : {}) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { status: response.status, body: await response.json(), etag: response.headers.get("etag") };
+  }
   try {
-    const health = await waitForApi(baseUrl, child, output);
-    assert.equal(health.app, "super-memory");
-
-    const empty = await (await fetch(`${baseUrl}/api/rules`)).json();
-    assert.deepEqual(empty.rules, []);
-
-    const createdResponse = await fetch(`${baseUrl}/api/rules`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sampleRule()),
-    });
-    const created = await createdResponse.json();
-    assert.equal(createdResponse.status, 201, JSON.stringify(created));
-    assert.equal(created.rule.lifecycle.last_validated_at, null);
-
-    const updatedDraft = structuredClone(created.rule);
-    updatedDraft.title = "管理台编辑追加证据";
-    updatedDraft.evidence = [{ ...updatedDraft.evidence[0], id: "EVIDENCE-SMOKE-2", summary: "追加新的确认依据。" }];
-    const updateResponse = await fetch(`${baseUrl}/api/rules/${updatedDraft.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updatedDraft),
-    });
-    const updated = await updateResponse.json();
-    assert.equal(updateResponse.status, 200, JSON.stringify(updated));
-    assert.deepEqual(updated.rule.evidence.map((item) => item.id), ["EVIDENCE-SMOKE-1", "EVIDENCE-SMOKE-2"]);
-    assert.equal(updated.rule.lifecycle.created_at, created.rule.lifecycle.created_at);
-    assert.equal(updated.rule.lifecycle.last_validated_at, null);
-
-    const staleResponse = await fetch(`${baseUrl}/api/rules/${updatedDraft.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...created.rule, title: "旧页面覆盖" }),
-    });
-    assert.equal(staleResponse.status, 400);
-    assert.match((await staleResponse.json()).error, /已被其他操作修改/);
-
-    const archivedResponse = await fetch(`${baseUrl}/api/rules/${updatedDraft.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...updated.rule, status: "archived" }),
-    });
-    const archived = await archivedResponse.json();
-    assert.equal(archivedResponse.status, 200, JSON.stringify(archived));
-    assert.equal(archived.rule.status, "archived");
-
-    const bundle = await (await fetch(`${baseUrl}/api/export`)).json();
-    assert.equal(bundle.format, "super-memory-export");
-    assert.equal(bundle.rules.length, 1);
-
-    const deletedResponse = await fetch(
-      `${baseUrl}/api/rules/${encodeURIComponent(sampleRule().id)}`,
-      { method: "DELETE" },
-    );
-    assert.equal(deletedResponse.status, 200, await deletedResponse.text());
-
-    const importedResponse = await fetch(`${baseUrl}/api/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bundle: { ...bundle, scope_hierarchy: [{ id: " server ", modules: [{ id: " svr_scene " }] }] }, overwrite: false }),
-    });
-    const imported = await importedResponse.json();
-    assert.equal(importedResponse.status, 200, JSON.stringify(imported));
-    assert.deepEqual(imported.imported, [sampleRule().id]);
-
-    const restored = await (await fetch(`${baseUrl}/api/rules`)).json();
-    assert.equal(restored.rules.length, 1);
-    assert.equal(restored.rules[0].status, "archived");
-    assert.equal(restored.rules[0].evidence.length, 2);
-    const scopes = await (await fetch(`${baseUrl}/api/scopes`)).json();
-    assert.equal(scopes.scopes[0].id, "server");
-    assert.equal(scopes.scopes[0].label, "server");
-    assert.equal(scopes.scopes[0].modules[0].id, "svr_scene");
-
-    const validImport = { ...sampleRule(), id: "RULE-IMPORT-FIRST" };
-    const invalidImport = { ...sampleRule(), id: "RULE-IMPORT-INVALID", confidence: "invalid" };
-    const rejectedImport = await fetch(`${baseUrl}/api/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bundle: { ...bundle, rules: [validImport, invalidImport] } }),
-    });
-    assert.equal(rejectedImport.status, 400);
-    const afterRejectedImport = await (await fetch(`${baseUrl}/api/rules`)).json();
-    assert.equal(afterRejectedImport.rules.length, 1);
-
-    const rejected = await fetch(`${baseUrl}/api/health`, {
-      headers: { Origin: "https://example.invalid" },
-    });
-    assert.equal(rejected.status, 403);
+    const deadline = Date.now() + 15000;
+    while (true) {
+      if (startupError) throw startupError;
+      if (child.exitCode !== null) throw new Error(output.join(""));
+      try {
+        const response = await fetch(base + "/api/health", { signal: AbortSignal.timeout(500) });
+        if (response.ok) break;
+      } catch { /* 服务正在启动。 */ }
+      if (Date.now() >= deadline) throw new Error("启动超时：" + output.join(""));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await action({ request, base, memoryRoot });
   } finally {
-    const exited = child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => child.once("exit", resolve));
-    child.kill();
-    await exited;
+    if (child.pid && child.exitCode === null) {
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      child.kill();
+      await exited;
+    }
     assert.equal(path.dirname(path.resolve(memoryRoot)), path.resolve(os.tmpdir()));
     await rm(memoryRoot, { recursive: true, force: true });
   }
-});
+}
+
+test("API 使用内容版本号并保护证据、归档和删除", async () => withApi(async ({ request, base }) => {
+  assert.equal((await request("GET", "/api/health")).body.apiVersion, 2);
+  assert.deepEqual((await request("GET", "/api/rules")).body.records, []);
+  const created = await request("POST", "/api/rules", { rule: sampleRule() });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.equal(created.body.revision.length, 64);
+  assert.equal(created.etag, '"' + created.body.revision + '"');
+  const rule = structuredClone(created.body.rule);
+  rule.evidence = [{ ...rule.evidence[0], id: "EVIDENCE-API-NEW" }];
+  rule.status = "archived";
+  const url = "/api/rules/" + rule.id;
+  assert.equal((await request("PUT", url, { rule })).status, 400);
+  const updated = await request("PUT", url, { rule }, created.body.revision);
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.equal(updated.body.rule.evidence.length, 2);
+  assert.equal(updated.body.rule.lifecycle.last_validated_at, null);
+  assert.equal((await request("GET", url)).body.revision, updated.body.revision);
+  assert.equal((await request("DELETE", url, undefined, created.body.revision)).status, 409);
+  assert.equal((await request("DELETE", url, undefined, updated.body.revision)).status, 200);
+  assert.deepEqual((await request("GET", "/api/rules")).body.records, []);
+  const denied = await fetch(base + "/api/health", { headers: { Origin: "https://example.invalid" } });
+  assert.equal(denied.status, 403);
+}));
+
+test("API 并发编辑只接受同一版本中的一个修改", async () => withApi(async ({ request }) => {
+  const created = (await request("POST", "/api/rules", { rule: sampleRule() })).body;
+  const updates = await Promise.all([1, 2].map((index) => request("PUT", "/api/rules/" + created.rule.id, { rule: { ...created.rule, title: "并发修改 " + index } }, created.revision)));
+  assert.deepEqual(updates.map((result) => result.status).sort(), [200, 409]);
+  assert.equal((await request("GET", "/api/rules")).body.records.length, 1);
+}));
+
+test("API 导入整批校验并保留作用域和旧证据", async () => withApi(async ({ request }) => {
+  const created = (await request("POST", "/api/rules", { rule: sampleRule() })).body;
+  const exported = (await request("GET", "/api/export")).body;
+  const invalid = { ...sampleRule(), id: "RULE-INVALID", confidence: "bad" };
+  const valid = { ...sampleRule(), id: "RULE-NEW" };
+  const rejected = await request("POST", "/api/import", { bundle: { ...exported, rules: [valid, invalid] }, conflict: "replace" });
+  assert.equal(rejected.status, 400);
+  assert.equal((await request("GET", "/api/rules")).body.records.length, 1);
+  const incoming = structuredClone(created.rule);
+  incoming.evidence[0].id = "EVIDENCE-IMPORT";
+  const bundle = { ...exported, rules: [incoming], scope_hierarchy: [{ id: " server ", modules: [{ id: " scene " }] }] };
+  const imported = await request("POST", "/api/import", { bundle, conflict: "replace" });
+  assert.equal(imported.status, 200, JSON.stringify(imported.body));
+  const snapshot = (await request("GET", "/api/rules")).body;
+  assert.equal(snapshot.records[0].rule.evidence.length, 2);
+  assert.equal(snapshot.scopes[0].label, "server");
+  assert.equal(snapshot.scopes[0].modules[0].id, "scene");
+}));
+
+test("Python 等待规则锁时 HTTP 健康检查仍能响应", async () => withApi(async ({ request, base, memoryRoot }) => {
+  const code = "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from super_memory.repository import RuleStore; store=RuleStore(Path(sys.argv[2]));\nwith store.session():\n print('locked',flush=True)\n sys.stdin.readline()";
+  const locker = spawn(process.platform === "win32" ? "python" : "python3", ["-B", "-X", "utf8", "-c", code, path.join(project, "skills/super-memory/scripts"), memoryRoot], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  const exited = new Promise((resolve) => locker.once("exit", resolve));
+  let pending;
+  try {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("等待测试锁超时")), 5000);
+      locker.stdout.once("data", () => { clearTimeout(timeout); resolve(); });
+      locker.once("error", (error) => { clearTimeout(timeout); reject(error); });
+    });
+    pending = request("POST", "/api/rules", { rule: sampleRule() });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const health = await fetch(base + "/api/health", { signal: AbortSignal.timeout(1500) });
+    assert.equal(health.status, 200);
+  } finally {
+    locker.stdin.end();
+    await exited;
+    if (pending) assert.equal((await pending).status, 201);
+  }
+}));

@@ -58,7 +58,7 @@ Codex 生成或修改代码
 
 配置自动调用后，Codex 在代码生成、修改、调试或审查开始前，会按语言、技术、项目、模块和操作关键词检索最相关的生效规则。命中的规则进入本次任务上下文，候选规则只作提示，不会直接约束代码生成。
 
-检索支持 `C++/cpp/cxx` 等语言别名和中文句子。项目、模块、语言和技术可通过独立参数过滤，项目名和模块名不会作为相关度加分项。使用 `--format context` 可以一次取得完整要求、触发条件、例外、冲突关系及规则来源；默认摘要输出仍然保留。
+检索支持 `C++/cpp/cxx` 等语言别名和中文句子。项目、模块、语言和技术可通过独立参数过滤，项目名和模块名不会作为相关度加分项。`search` 一次返回完整要求、触发条件、例外、冲突关系及规则来源。
 
 任务结束前，Codex 还会依据命中的规则做一次自检；如果新的人工纠正具有充分证据，再进入记忆审核流程。
 
@@ -95,7 +95,7 @@ Codex 对这些能力的官方定位可参考 [Customization](https://learn.chat
 安装完成后，Skill 会在下一轮任务中可用。首次初始化默认规则库：
 
 ```powershell
-python "$HOME/.codex/skills/super-memory/scripts/memory_cli.py" init
+python "$HOME/.codex/skills/super-memory/scripts/memory.py" init
 ```
 
 默认数据目录是 `~/.super-memory`。如需使用其他目录，请让 Codex、命令行和管理台都设置同一个 `SUPER_MEMORY_HOME`。
@@ -162,7 +162,7 @@ Super Memory 不会自动修改 Codex 原生的 `~/.codex/memories/`、`MEMORY.m
 ```powershell
 git clone https://github.com/leozeng-coder/super-memory.git
 cd super-memory
-python ./skills/super-memory/scripts/memory_cli.py init
+python ./skills/super-memory/scripts/memory.py init
 .\start-super-memory.cmd
 ```
 
@@ -176,7 +176,7 @@ python ./skills/super-memory/scripts/memory_cli.py init
 
 ```powershell
 $env:SUPER_MEMORY_HOME = "D:\my-super-memory"
-python ./skills/super-memory/scripts/memory_cli.py init
+python ./skills/super-memory/scripts/memory.py init
 .\start-super-memory.cmd
 ```
 
@@ -194,98 +194,105 @@ Codex、命令行和可视化管理台直接读写同一个记忆目录。`index
 
 规则数据目录按以下顺序确定：
 
-1. 命令行参数 `--memory-root`；
+1. 命令行参数 `--root`；
 2. 环境变量 `SUPER_MEMORY_HOME`；
 3. 已经包含 `memory.config.json` 的源码检出根目录；
 4. 用户目录下的 `~/.super-memory`。
 
 ## 命令行用法
 
-以下示例使用默认记忆目录；需要指定目录时，在脚本路径后增加 `--memory-root <目录>`。
+唯一入口为 `scripts/memory.py`。下面的命令在仓库根目录运行；指定数据目录时，在子命令前加 `--root <目录>`。
 
 ```powershell
-# 初始化规则库
-python ./skills/super-memory/scripts/memory_cli.py init
+# 显示数据目录；info 不会初始化
+python ./skills/super-memory/scripts/memory.py info
 
-# 校验当前规则
-python ./skills/super-memory/scripts/memory_cli.py validate
+# 初始化、校验与重建索引
+python ./skills/super-memory/scripts/memory.py init
+python ./skills/super-memory/scripts/memory.py validate
+python ./skills/super-memory/scripts/memory.py reindex
 
-# 重建派生索引
-python ./skills/super-memory/scripts/memory_cli.py reindex
-
-# 返回相关规则的摘要，兼容原有调用方式
-python ./skills/super-memory/scripts/memory_cli.py retrieve --query "C++ 网络 序列化" --limit 8
-
-# 编码前按实际项目、模块和语言检索，读取完整要求与例外
-python ./skills/super-memory/scripts/memory_cli.py retrieve `
+# 读取完整规则要求和例外
+python ./skills/super-memory/scripts/memory.py search `
   --query "异步回调 shared_ptr 生命周期" `
   --project my-project `
   --module my-module `
-  --language cpp `
-  --format context
-
-# 将已经审核的完整规则草案保存为 active
-python ./skills/super-memory/scripts/memory_cli.py save `
-  --input "./rule-draft.json" `
-  --status active `
-  --actor user `
-  --reason "用户明确选择保存为 active"
+  --language cpp
 ```
 
-### 检索范围与输出预算
-
-示例中的项目和模块须替换成规则库中的实际 ID。未提供的作用域条件不会自动推断，跨项目检索的结果仍需核对适用范围。
+项目和模块须替换为实际 ID。未提供的作用域不会自动推断；指定项目但模块未知时，只返回项目及更广范围的规则。
 
 | 参数 | 用途 |
 | --- | --- |
-| `--project` | 当前项目 ID；保留适用的全局、语言和技术规则 |
-| `--module` | 当前模块 ID，必须同时提供项目；可重复传入 |
-| `--language` / `--technology` | 按语言或技术过滤；可重复传入 |
-| `--format context` | 返回规则正文、例外、来源、更新时间和匹配原因 |
-| `--limit` | 普通匹配规则数量上限，默认 8 |
-| `--max-chars` | context 输出字符预算，默认 16000，最小 512 |
-| `--include-candidates` | 复盘时同时检索候选规则，避免重复创建；候选规则不约束代码 |
+| `--project` | 当前项目 ID |
+| `--module` | 当前模块，必须同时提供项目；可重复 |
+| `--language` / `--technology` | 语言或技术过滤；可重复 |
+| `--limit` | 普通匹配规则上限，默认 8 |
+| `--max-chars` | JSON 输出字符预算，默认 16000，最小 512 |
+| `--include-candidates` | 复盘时同时查找候选规则；候选规则不约束代码 |
 
-指定项目但未指定模块时，只返回项目及更广范围的规则。context 输出中的 `omitted_count` 和 `warnings` 会说明因数量或字符预算遗漏的规则；需要时缩小查询范围或提高预算，正文和例外不会被截断。
+`search` 固定返回完整要求、例外、来源、匹配依据和内容版本号 `revision`。`omitted_count` 与 `warnings` 说明因预算遗漏的规则；正文和例外不会截断。经用户确认后可设置 `trigger.always_apply: true`，此类 active 规则在完整上下文确认适用后不受普通数量上限影响，字符预算不足时报错。
 
-经用户确认某规则在其适用范围内始终生效后，可设置可选字段 `trigger.always_apply: true`。这类 active 规则在提供完整适用上下文后不受普通数量上限影响；字符预算不足会报错，需要增大预算。
+### 新增、更新与删除
 
-### 更新规则与保留证据
-
-`save` 要求中文保存原因，支持 `active`、`candidate`、`suspect`、`deprecated`、`superseded`、`archived`。首次审核通常选择 active 或 candidate，其余状态用于后续维护。规则字段以 [Schema](./skills/super-memory/assets/memory-rule.schema.json) 为准，审核流程见 [Skill 定义](./skills/super-memory/SKILL.md)。
-
-更新已有规则时，使用读取时的更新时间防止覆盖其他修改：
+规则由 [Schema](./skills/super-memory/assets/memory-rule.schema.json) 定义，程序直接读取这一份定义进行校验。规则 JSON 的 `status` 决定生效、候选、弃用或归档状态；审核步骤见 [Skill](./skills/super-memory/SKILL.md)。
 
 ```powershell
-python ./skills/super-memory/scripts/memory_cli.py save `
-  --input "./rule-draft.json" `
-  --mode update `
-  --expected-updated-at "<读取时的 updated_at>" `
-  --reason "用户确认更新规则"
+# 新增已审核的完整规则
+python ./skills/super-memory/scripts/memory.py create `
+  --input "./rule-draft.json" --reason "用户确认新增规则"
+
+# 读取完整规则和内容版本号
+python ./skills/super-memory/scripts/memory.py get RULE-EXAMPLE
+
+# 更新时必须提供读取时的 revision
+python ./skills/super-memory/scripts/memory.py update RULE-EXAMPLE `
+  --revision "<读取时的 revision>" `
+  --input "./rule-draft.json" --reason "用户确认更新规则"
+
+# 删除也检查版本，并将规则移入回收区
+python ./skills/super-memory/scripts/memory.py delete RULE-EXAMPLE `
+  --revision "<读取时的 revision>" --reason "用户确认删除规则"
 ```
 
-- 更新时间可从 context 的 `updated_at` 或完整规则的 `lifecycle.updated_at` 取得；没有时间时传入字面量 `null`。版本冲突后先重新读取、合并，再保存。管理台编辑自动执行该检查。
-- `--mode create` 只允许新增，`--mode update` 只允许更新；省略时为 `upsert`，按 ID 新增或更新。`--json` 返回保存后的完整规则。
-- 更新会合并已有证据并按证据 ID 去重。已有证据内容不可覆盖；需要纠正时用新证据 ID 追加修正说明。
-- CLI 与管理台共用读写锁和保存入口。保存采用单文件原子替换，并在操作异常时恢复规则、索引和事件。
-- 保存不会自动刷新 `last_validated_at`；它表示规则经过实践验证的时间。`review_after` 到期表示需要复查，不会自动让规则失效。
+- 新增与更新是独立命令。已有 ID 不能用 `create` 覆盖，`update` 和 `delete` 均强制检查内容版本。
+- `revision` 是完整规则内容的哈希；即使文件被手工修改且更新时间未变，也能发现冲突。冲突后重新读取、合并，再保存。
+- 更新按证据 ID 合并历史；旧证据不可覆盖，纠正时用新 ID 追加说明。保存不会刷新表示实践验证时间的 `last_validated_at`。
+- CLI 接受 `--input <文件>` 或标准输入 JSON，成功输出 JSON；业务失败返回非零退出码，并在标准错误输出 `{"error":{"code":"...","message":"..."}}`。
 
-### 导入、导出与回收
+### 快照与导入导出
 
 ```powershell
-# 输出包含规则和作用域的 JSON 快照
-python ./skills/super-memory/scripts/memory_cli.py list --export
+# 一次读取完整规则、版本号与作用域
+python ./skills/super-memory/scripts/memory.py list
 
-# 导入管理台导出的 JSON 文件；已有 ID 默认跳过
-python ./skills/super-memory/scripts/memory_cli.py import --input "./rules-export.json"
+# 直接写入 UTF-8 JSON 文件
+python ./skills/super-memory/scripts/memory.py export --output "./rules-export.json"
 
-# 移入本地回收区，并更新索引和事件
-python ./skills/super-memory/scripts/memory_cli.py delete `
-  --id RULE-EXAMPLE `
-  --reason "用户确认删除该规则"
+# 默认跳过已有 ID；replace 表示确认更新同 ID 规则
+python ./skills/super-memory/scripts/memory.py import `
+  --input "./rules-export.json" --conflict skip --reason "用户确认导入规则"
 ```
 
-导入前会校验整批规则，随后在一次事务中提交规则和作用域；`--overwrite` 允许更新已有 ID，但仍保留旧证据。需要保存导出文件时可直接使用管理台的导出功能；自行保存命令输出时应使用 UTF-8 无 BOM 编码。
+导入先校验整批数据，再一次提交规则和作用域；更新已有规则仍保留证据历史。所有写入由同一个业务服务执行。文件锁串行化读写，事务日志记录原数据，操作异常会恢复；进程中断后，下次访问会先恢复未完成事务。
+
+## 实现结构
+
+```text
+skills/super-memory/
+├── SKILL.md
+├── assets/memory-rule.schema.json
+└── scripts/
+    ├── memory.py                 命令入口
+    └── super_memory/
+        ├── cli.py                参数和 JSON 输入输出
+        ├── domain.py             Schema 校验、证据合并和内容版本
+        ├── repository.py         文件锁、原子写入和事务恢复
+        ├── search.py             作用域、匹配、排序和输出预算
+        └── service.py            新增、更新、删除及批量操作
+```
+
+管理台通过 `web/memory-client.mjs` 异步调用同一 CLI，`web/local-api.mjs` 负责 HTTP。列表返回 `records` 与 `scopes` 的一致快照；单条记录为 `{rule, revision}`。新增和更新请求使用 `{rule}`，更新及删除必须在 `If-Match` 中携带版本号，版本冲突返回 HTTP 409。界面表单保留打开时的版本，后台刷新不会替换这个编辑基准。
 
 ## 环境要求
 

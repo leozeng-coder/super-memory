@@ -67,7 +67,7 @@ type Rule = {
     projects?: string[];
     modules?: string[];
   };
-  trigger: { description: string; keywords: string[] };
+  trigger: { description: string; keywords: string[]; always_apply?: boolean };
   instruction: { do: string; avoid: string };
   rationale: { problem: string; root_cause: string };
   exceptions: Array<{ condition: string; requirement: string }>;
@@ -96,6 +96,8 @@ type Rule = {
   };
   tags: string[];
 };
+
+type RuleRecord = { rule: Rule; revision: string };
 
 type ViewMode = "graph" | "list";
 type GraphDisplayMode = "level" | "all";
@@ -520,24 +522,33 @@ function newRuleDraft(): Rule {
 
 function RuleEditor({
   initial,
+  revision,
   mode,
   scopeCatalog,
   onClose,
   onSaved,
 }: {
   initial: Rule;
+  revision?: string;
   mode: "create" | "edit";
   scopeCatalog: ScopeCatalogProject[];
   onClose: () => void;
-  onSaved: (rule: Rule) => void;
+  onSaved: (record: RuleRecord) => void;
 }) {
   const [draft, setDraft] = useState(initial);
+  const [expectedRevision] = useState(revision);
+  const [keywordText, setKeywordText] = useState(initial.trigger.keywords.join("，"));
+  const [tagText, setTagText] = useState(initial.tags.join("，"));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function save() {
     if (!draft.title.trim() || !draft.instruction.do.trim() || !draft.instruction.avoid.trim()) {
       setError("请完整填写规则标题、应该怎么做和应该避免。");
+      return;
+    }
+    if (!draft.trigger.description.trim() || !draft.trigger.keywords.length) {
+      setError("请填写触发条件和至少一个检索关键词。");
       return;
     }
     setSaving(true);
@@ -547,13 +558,13 @@ function RuleEditor({
         mode === "create" ? `${API}/rules` : `${API}/rules/${encodeURIComponent(draft.id)}`,
         {
           method: mode === "create" ? "POST" : "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(draft),
+          headers: { "Content-Type": "application/json", ...(mode === "edit" && expectedRevision ? { "If-Match": expectedRevision } : {}) },
+          body: JSON.stringify({ rule: draft }),
         },
       );
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "保存失败");
-      onSaved(result.rule);
+      if (!response.ok) throw new Error(result.error?.message || "保存失败");
+      onSaved(result);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存失败");
     } finally {
@@ -636,6 +647,10 @@ function RuleEditor({
             <textarea rows={2} value={draft.trigger.description} onChange={(event) => setDraft({ ...draft, trigger: { ...draft.trigger, description: event.target.value } })} />
           </label>
           <label className="field field-span">
+            <span>检索关键词（逗号分隔）</span>
+            <input value={keywordText} onChange={(event) => { setKeywordText(event.target.value); setDraft({ ...draft, trigger: { ...draft.trigger, keywords: [...new Set(event.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean))] } }); }} />
+          </label>
+          <label className="field field-span">
             <span>应该怎么做</span>
             <textarea rows={3} value={draft.instruction.do} onChange={(event) => setInstruction("do", event.target.value)} />
           </label>
@@ -645,7 +660,7 @@ function RuleEditor({
           </label>
           <label className="field field-span">
             <span>标签（逗号分隔）</span>
-            <input value={draft.tags.join("，")} onChange={(event) => setDraft({ ...draft, tags: event.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean) })} />
+            <input value={tagText} onChange={(event) => { setTagText(event.target.value); setDraft({ ...draft, tags: [...new Set(event.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean))] }); }} />
           </label>
           {error && <p className="form-error">{error}</p>}
         </div>
@@ -769,7 +784,8 @@ function RuleDetail({
 }
 
 export function MemoryWorkspace() {
-  const [rules, setRules] = useState<Rule[]>([]);
+  const [records, setRecords] = useState<RuleRecord[]>([]);
+  const rules = useMemo(() => records.map((record) => record.rule), [records]);
   const [scopeCatalog, setScopeCatalog] = useState<ScopeCatalogProject[]>([]);
   const [nodes, setNodes, onNodesChange] = useNodesState<KnowledgeNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -790,18 +806,11 @@ export function MemoryWorkspace() {
     setLoading(true);
     setError("");
     try {
-      const [rulesResponse, scopesResponse] = await Promise.all([
-        fetch(`${API}/rules`),
-        fetch(`${API}/scopes`),
-      ]);
-      const [rulesResult, scopesResult] = await Promise.all([
-        rulesResponse.json(),
-        scopesResponse.json(),
-      ]);
-      if (!rulesResponse.ok) throw new Error(rulesResult.error || "读取记忆失败");
-      if (!scopesResponse.ok) throw new Error(scopesResult.error || "读取作用域失败");
-      setRules(rulesResult.rules);
-      setScopeCatalog(scopesResult.scopes);
+      const response = await fetch(`${API}/rules`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message || "读取记忆失败");
+      setRecords(result.records);
+      setScopeCatalog(result.scopes);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "读取记忆失败");
     } finally {
@@ -891,31 +900,33 @@ export function MemoryWorkspace() {
     }
   }, [scopeHierarchy, focusedScope]);
 
-  const selected = rules.find((rule) => rule.id === selectedId);
+  const selectedRecord = records.find((record) => record.rule.id === selectedId);
+  const selected = selectedRecord?.rule;
   const counts = {
     active: rules.filter((rule) => rule.status === "active").length,
     candidate: rules.filter((rule) => rule.status === "candidate").length,
     critical: rules.filter((rule) => rule.priority === "critical").length,
   };
 
-  function handleSaved(rule: Rule) {
-    setRules((current) => {
-      const exists = current.some((item) => item.id === rule.id);
-      return exists ? current.map((item) => item.id === rule.id ? rule : item) : [...current, rule];
+  function handleSaved(record: RuleRecord) {
+    setRecords((current) => {
+      const exists = current.some((item) => item.rule.id === record.rule.id);
+      return exists ? current.map((item) => item.rule.id === record.rule.id ? record : item) : [...current, record];
     });
-    setSelectedId(rule.id);
+    setSelectedId(record.rule.id);
     setEditorMode(null);
   }
 
-  async function deleteRule(rule: Rule) {
+  async function deleteRule(record: RuleRecord) {
+    const rule = record.rule;
     if (!window.confirm(`确定删除“${rule.title}”吗？\n规则会移动到本地回收区。`)) return;
-    const response = await fetch(`${API}/rules/${encodeURIComponent(rule.id)}`, { method: "DELETE" });
+    const response = await fetch(`${API}/rules/${encodeURIComponent(rule.id)}`, { method: "DELETE", headers: { "If-Match": record.revision } });
     const result = await response.json();
     if (!response.ok) {
-      window.alert(result.error || "删除失败");
+      window.alert(result.error?.message || "删除失败");
       return;
     }
-    setRules((current) => current.filter((item) => item.id !== rule.id));
+    setRecords((current) => current.filter((item) => item.rule.id !== rule.id));
     setSelectedId("");
   }
 
@@ -924,7 +935,7 @@ export function MemoryWorkspace() {
     try {
       const response = await fetch(`${API}/export`);
       const bundle = await response.json();
-      if (!response.ok) throw new Error(bundle.error || "导出失败");
+      if (!response.ok) throw new Error(bundle.error?.message || "导出失败");
       const blob = new Blob([`${JSON.stringify(bundle, null, 2)}\n`], {
         type: "application/json;charset=utf-8",
       });
@@ -963,10 +974,10 @@ export function MemoryWorkspace() {
       const response = await fetch(`${API}/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bundle, overwrite }),
+        body: JSON.stringify({ bundle, conflict: overwrite ? "replace" : "skip" }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "导入失败");
+      if (!response.ok) throw new Error(result.error?.message || "导入失败");
       await loadRules();
       window.alert(`导入完成：写入 ${result.imported.length} 条，跳过 ${result.skipped.length} 条。`);
     } catch (reason) {
@@ -1111,8 +1122,8 @@ export function MemoryWorkspace() {
         )}
       </section>
 
-      {selected && <RuleDetail rule={selected} rules={rules} onClose={() => setSelectedId("")} onEdit={() => setEditorMode("edit")} onDelete={() => deleteRule(selected)} onSelect={setSelectedId} />}
-      {editorMode && <RuleEditor initial={editorMode === "edit" && selected ? selected : newRuleDraft()} mode={editorMode} scopeCatalog={scopeCatalog} onClose={() => setEditorMode(null)} onSaved={handleSaved} />}
+      {selectedRecord && <RuleDetail rule={selectedRecord.rule} rules={rules} onClose={() => setSelectedId("")} onEdit={() => setEditorMode("edit")} onDelete={() => deleteRule(selectedRecord)} onSelect={setSelectedId} />}
+      {editorMode && <RuleEditor key={editorMode + ":" + selectedId} initial={editorMode === "edit" && selected ? selected : newRuleDraft()} revision={editorMode === "edit" ? selectedRecord?.revision : undefined} mode={editorMode} scopeCatalog={scopeCatalog} onClose={() => setEditorMode(null)} onSaved={handleSaved} />}
     </main>
   );
 }
