@@ -111,7 +111,40 @@ test("本地 API 共用一套规则并支持导入导出", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sampleRule()),
     });
-    assert.equal(createdResponse.status, 201, await createdResponse.text());
+    const created = await createdResponse.json();
+    assert.equal(createdResponse.status, 201, JSON.stringify(created));
+    assert.equal(created.rule.lifecycle.last_validated_at, null);
+
+    const updatedDraft = structuredClone(created.rule);
+    updatedDraft.title = "管理台编辑追加证据";
+    updatedDraft.evidence = [{ ...updatedDraft.evidence[0], id: "EVIDENCE-SMOKE-2", summary: "追加新的确认依据。" }];
+    const updateResponse = await fetch(`${baseUrl}/api/rules/${updatedDraft.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updatedDraft),
+    });
+    const updated = await updateResponse.json();
+    assert.equal(updateResponse.status, 200, JSON.stringify(updated));
+    assert.deepEqual(updated.rule.evidence.map((item) => item.id), ["EVIDENCE-SMOKE-1", "EVIDENCE-SMOKE-2"]);
+    assert.equal(updated.rule.lifecycle.created_at, created.rule.lifecycle.created_at);
+    assert.equal(updated.rule.lifecycle.last_validated_at, null);
+
+    const staleResponse = await fetch(`${baseUrl}/api/rules/${updatedDraft.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...created.rule, title: "旧页面覆盖" }),
+    });
+    assert.equal(staleResponse.status, 400);
+    assert.match((await staleResponse.json()).error, /已被其他操作修改/);
+
+    const archivedResponse = await fetch(`${baseUrl}/api/rules/${updatedDraft.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...updated.rule, status: "archived" }),
+    });
+    const archived = await archivedResponse.json();
+    assert.equal(archivedResponse.status, 200, JSON.stringify(archived));
+    assert.equal(archived.rule.status, "archived");
 
     const bundle = await (await fetch(`${baseUrl}/api/export`)).json();
     assert.equal(bundle.format, "super-memory-export");
@@ -126,7 +159,7 @@ test("本地 API 共用一套规则并支持导入导出", async () => {
     const importedResponse = await fetch(`${baseUrl}/api/import`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bundle, overwrite: false }),
+      body: JSON.stringify({ bundle: { ...bundle, scope_hierarchy: [{ id: " server ", modules: [{ id: " svr_scene " }] }] }, overwrite: false }),
     });
     const imported = await importedResponse.json();
     assert.equal(importedResponse.status, 200, JSON.stringify(imported));
@@ -134,14 +167,33 @@ test("本地 API 共用一套规则并支持导入导出", async () => {
 
     const restored = await (await fetch(`${baseUrl}/api/rules`)).json();
     assert.equal(restored.rules.length, 1);
+    assert.equal(restored.rules[0].status, "archived");
+    assert.equal(restored.rules[0].evidence.length, 2);
+    const scopes = await (await fetch(`${baseUrl}/api/scopes`)).json();
+    assert.equal(scopes.scopes[0].id, "server");
+    assert.equal(scopes.scopes[0].label, "server");
+    assert.equal(scopes.scopes[0].modules[0].id, "svr_scene");
+
+    const validImport = { ...sampleRule(), id: "RULE-IMPORT-FIRST" };
+    const invalidImport = { ...sampleRule(), id: "RULE-IMPORT-INVALID", confidence: "invalid" };
+    const rejectedImport = await fetch(`${baseUrl}/api/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bundle: { ...bundle, rules: [validImport, invalidImport] } }),
+    });
+    assert.equal(rejectedImport.status, 400);
+    const afterRejectedImport = await (await fetch(`${baseUrl}/api/rules`)).json();
+    assert.equal(afterRejectedImport.rules.length, 1);
 
     const rejected = await fetch(`${baseUrl}/api/health`, {
       headers: { Origin: "https://example.invalid" },
     });
     assert.equal(rejected.status, 403);
   } finally {
+    const exited = child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => child.once("exit", resolve));
     child.kill();
-    await new Promise((resolve) => child.once("exit", resolve));
+    await exited;
+    assert.equal(path.dirname(path.resolve(memoryRoot)), path.resolve(os.tmpdir()));
     await rm(memoryRoot, { recursive: true, force: true });
   }
 });

@@ -58,6 +58,8 @@ Codex 生成或修改代码
 
 配置自动调用后，Codex 在代码生成、修改、调试或审查开始前，会按语言、技术、项目、模块和操作关键词检索最相关的生效规则。命中的规则进入本次任务上下文，候选规则只作提示，不会直接约束代码生成。
 
+检索支持 `C++/cpp/cxx` 等语言别名和中文句子。项目、模块、语言和技术可通过独立参数过滤，项目名和模块名不会作为相关度加分项。使用 `--format context` 可以一次取得完整要求、触发条件、例外、冲突关系及规则来源；默认摘要输出仍然保留。
+
 任务结束前，Codex 还会依据命中的规则做一次自检；如果新的人工纠正具有充分证据，再进入记忆审核流程。
 
 ## 与 Codex 自身持久化能力配合
@@ -164,7 +166,9 @@ python ./skills/super-memory/scripts/memory_cli.py init
 .\start-super-memory.cmd
 ```
 
-首次启动会安装 Web 依赖。页面与本地 API 默认只监听本机回环地址，并使用 `~/.super-memory`，因此它与通过 `$skill-installer` 安装的 Skill 共用同一份规则。
+首次启动会安装 Web 依赖。页面与本地 API 默认只监听本机回环地址；未设置自定义数据目录且源码根目录没有本地配置时，使用 `~/.super-memory`。
+
+如果源码检出根目录已经有 `memory.config.json`，或设置了 `SUPER_MEMORY_HOME`，会优先使用相应目录。请核对启动输出和检索结果中的 `memory_root`，确保管理台与已安装的 Skill 指向同一个规则库。
 
 也可以在 PowerShell、macOS 或 Linux 中分别运行 `./start-super-memory.ps1`、`./start-super-memory.sh`，或直接执行 `node ./start-web.mjs`。
 
@@ -209,8 +213,16 @@ python ./skills/super-memory/scripts/memory_cli.py validate
 # 重建派生索引
 python ./skills/super-memory/scripts/memory_cli.py reindex
 
-# 编码前检索相关的生效规则
+# 返回相关规则的摘要，兼容原有调用方式
 python ./skills/super-memory/scripts/memory_cli.py retrieve --query "C++ 网络 序列化" --limit 8
+
+# 编码前按实际项目、模块和语言检索，读取完整要求与例外
+python ./skills/super-memory/scripts/memory_cli.py retrieve `
+  --query "异步回调 shared_ptr 生命周期" `
+  --project my-project `
+  --module my-module `
+  --language cpp `
+  --format context
 
 # 将已经审核的完整规则草案保存为 active
 python ./skills/super-memory/scripts/memory_cli.py save `
@@ -220,12 +232,76 @@ python ./skills/super-memory/scripts/memory_cli.py save `
   --reason "用户明确选择保存为 active"
 ```
 
-`save` 会执行完整校验、原子写入、事件记录和索引重建。它只接受 `active` 或 `candidate`，并要求提供中文保存原因。
+### 检索范围与输出预算
+
+示例中的项目和模块须替换成规则库中的实际 ID。未提供的作用域条件不会自动推断，跨项目检索的结果仍需核对适用范围。
+
+| 参数 | 用途 |
+| --- | --- |
+| `--project` | 当前项目 ID；保留适用的全局、语言和技术规则 |
+| `--module` | 当前模块 ID，必须同时提供项目；可重复传入 |
+| `--language` / `--technology` | 按语言或技术过滤；可重复传入 |
+| `--format context` | 返回规则正文、例外、来源、更新时间和匹配原因 |
+| `--limit` | 普通匹配规则数量上限，默认 8 |
+| `--max-chars` | context 输出字符预算，默认 16000，最小 512 |
+| `--include-candidates` | 复盘时同时检索候选规则，避免重复创建；候选规则不约束代码 |
+
+指定项目但未指定模块时，只返回项目及更广范围的规则。context 输出中的 `omitted_count` 和 `warnings` 会说明因数量或字符预算遗漏的规则；需要时缩小查询范围或提高预算，正文和例外不会被截断。
+
+经用户确认某规则在其适用范围内始终生效后，可设置可选字段 `trigger.always_apply: true`。这类 active 规则在提供完整适用上下文后不受普通数量上限影响；字符预算不足会报错，需要增大预算。
+
+### 更新规则与保留证据
+
+`save` 要求中文保存原因，支持 `active`、`candidate`、`suspect`、`deprecated`、`superseded`、`archived`。首次审核通常选择 active 或 candidate，其余状态用于后续维护。规则字段以 [Schema](./skills/super-memory/assets/memory-rule.schema.json) 为准，审核流程见 [Skill 定义](./skills/super-memory/SKILL.md)。
+
+更新已有规则时，使用读取时的更新时间防止覆盖其他修改：
+
+```powershell
+python ./skills/super-memory/scripts/memory_cli.py save `
+  --input "./rule-draft.json" `
+  --mode update `
+  --expected-updated-at "<读取时的 updated_at>" `
+  --reason "用户确认更新规则"
+```
+
+- 更新时间可从 context 的 `updated_at` 或完整规则的 `lifecycle.updated_at` 取得；没有时间时传入字面量 `null`。版本冲突后先重新读取、合并，再保存。管理台编辑自动执行该检查。
+- `--mode create` 只允许新增，`--mode update` 只允许更新；省略时为 `upsert`，按 ID 新增或更新。`--json` 返回保存后的完整规则。
+- 更新会合并已有证据并按证据 ID 去重。已有证据内容不可覆盖；需要纠正时用新证据 ID 追加修正说明。
+- CLI 与管理台共用读写锁和保存入口。保存采用单文件原子替换，并在操作异常时恢复规则、索引和事件。
+- 保存不会自动刷新 `last_validated_at`；它表示规则经过实践验证的时间。`review_after` 到期表示需要复查，不会自动让规则失效。
+
+### 导入、导出与回收
+
+```powershell
+# 输出包含规则和作用域的 JSON 快照
+python ./skills/super-memory/scripts/memory_cli.py list --export
+
+# 导入管理台导出的 JSON 文件；已有 ID 默认跳过
+python ./skills/super-memory/scripts/memory_cli.py import --input "./rules-export.json"
+
+# 移入本地回收区，并更新索引和事件
+python ./skills/super-memory/scripts/memory_cli.py delete `
+  --id RULE-EXAMPLE `
+  --reason "用户确认删除该规则"
+```
+
+导入前会校验整批规则，随后在一次事务中提交规则和作用域；`--overwrite` 允许更新已有 ID，但仍保留旧证据。需要保存导出文件时可直接使用管理台的导出功能；自行保存命令输出时应使用 UTF-8 无 BOM 编码。
 
 ## 环境要求
 
 - Python 3.10 或更高版本；
-- Node.js 22 或更高版本（只有可视化管理台需要）。
+- Node.js 22.13 或更高版本（只有可视化管理台需要）。
+
+## 开发验证
+
+在仓库根目录运行：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+node --test tests/api-smoke.test.mjs
+```
+
+测试使用临时规则库，覆盖检索、作用域、证据保留、并发保存、版本冲突、失败回滚及管理台导入导出，不会改写现有规则。前端校验命令为 `npm --prefix web run lint` 和 `npm --prefix web run build`，需要先安装 Web 依赖。
 
 ## 本地规则与开源代码隔离
 

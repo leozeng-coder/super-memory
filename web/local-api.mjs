@@ -3,17 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
-import {
-  appendFile,
-  mkdtemp,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,9 +15,6 @@ const MEMORY_ROOT = path.resolve(
       ? APP_ROOT
       : path.join(os.homedir(), ".super-memory")),
 );
-const MEMORY_CONFIG_PATH = path.join(MEMORY_ROOT, "memory.config.json");
-const RULE_ROOT = path.join(MEMORY_ROOT, "graph", "rules");
-const EVENT_PATH = path.join(MEMORY_ROOT, "history", "events.jsonl");
 const MEMORY_CLI = path.join(
   APP_ROOT,
   "skills",
@@ -45,22 +32,6 @@ const ALLOWED_ORIGINS = new Set([
   `http://127.0.0.1:${WEB_PORT}`,
   `http://localhost:${WEB_PORT}`,
 ]);
-const VALID_STATUSES = new Set([
-  "candidate",
-  "active",
-  "suspect",
-  "deprecated",
-  "superseded",
-  "archived",
-]);
-const ID_PATTERN = /^RULE-[A-Z0-9][A-Z0-9-]*$/;
-
-function directoryForStatus(status) {
-  if (status === "active") return "active";
-  if (status === "archived" || status === "superseded") return "archive";
-  return "candidate";
-}
-
 function send(request, response, status, body) {
   const requestOrigin = request.headers.origin;
   const allowedOrigin = ALLOWED_ORIGINS.has(requestOrigin)
@@ -85,315 +56,75 @@ async function bodyJson(request) {
   return JSON.parse(body || "{}");
 }
 
-async function findRuleFiles() {
-  const files = [];
-  for (const directory of ["active", "candidate", "archive"]) {
-    const folder = path.join(RULE_ROOT, directory);
-    await mkdir(folder, { recursive: true });
-    const entries = await readdir(folder, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith(".json")) {
-        files.push(path.join(folder, entry.name));
-      }
-    }
-  }
-  return files;
-}
-
-async function readRules() {
-  const rules = [];
-  for (const file of await findRuleFiles()) {
-    const rule = JSON.parse(await readFile(file, "utf8"));
-    rule.lifecycle.updated_at ??=
-      rule.lifecycle.last_validated_at || rule.lifecycle.created_at;
-    rules.push(rule);
-  }
-  return rules.sort(
-    (a, b) =>
-      Number(b.status === "active") - Number(a.status === "active") ||
-      a.title.localeCompare(b.title, "zh-CN"),
-  );
-}
-
-async function readScopeHierarchy() {
-  const config = JSON.parse(await readFile(MEMORY_CONFIG_PATH, "utf8"));
-  return Array.isArray(config.scope_hierarchy) ? config.scope_hierarchy : [];
-}
-
-function normalizeScopeHierarchy(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((project) => {
-    if (!project || typeof project !== "object" || !project.id?.trim()) {
-      throw new Error("导入文件包含无效的项目作用域");
-    }
-    const modules = Array.isArray(project.modules) ? project.modules : [];
-    return {
-      id: project.id.trim(),
-      label: String(project.label || project.id).trim(),
-      created_at: project.created_at || new Date().toISOString(),
-      updated_at: project.updated_at || new Date().toISOString(),
-      modules: modules.map((module) => {
-        if (!module || typeof module !== "object" || !module.id?.trim()) {
-          throw new Error("导入文件包含无效的模块作用域");
-        }
-        return {
-          id: module.id.trim(),
-          label: String(module.label || module.id).trim(),
-          created_at: module.created_at || new Date().toISOString(),
-          updated_at: module.updated_at || new Date().toISOString(),
-        };
-      }),
-    };
-  });
-}
-
-async function writeScopeHierarchy(scopes) {
-  const config = JSON.parse(await readFile(MEMORY_CONFIG_PATH, "utf8"));
-  const temporaryPath = `${MEMORY_CONFIG_PATH}.tmp`;
-  await writeFile(
-    temporaryPath,
-    `${JSON.stringify({ ...config, scope_hierarchy: scopes }, null, 2)}\n`,
-    "utf8",
-  );
-  await rename(temporaryPath, MEMORY_CONFIG_PATH);
-}
-
-async function exportBundle() {
-  return {
-    format: "super-memory-export",
-    schema_version: 1,
-    exported_at: new Date().toISOString(),
-    scope_hierarchy: await readScopeHierarchy(),
-    rules: await readRules(),
-  };
-}
-
-async function importBundle(payload) {
-  const bundle = payload?.bundle;
-  const overwrite = payload?.overwrite === true;
-  if (
-    !bundle ||
-    bundle.format !== "super-memory-export" ||
-    bundle.schema_version !== 1 ||
-    !Array.isArray(bundle.rules)
-  ) {
-    throw new Error("不是有效的 Super Memory 导出文件");
-  }
-  if (bundle.rules.length > 10_000) throw new Error("一次最多导入 10000 条规则");
-
-  const seenIds = new Set();
-  for (const rule of bundle.rules) {
-    validateRule(rule, rule?.id);
-    if (seenIds.has(rule.id)) throw new Error(`导入文件中的规则 ID 重复：${rule.id}`);
-    seenIds.add(rule.id);
-  }
-  await validateImportedRules(bundle.rules);
-
-  const scopes = normalizeScopeHierarchy(bundle.scope_hierarchy);
-  const imported = [];
-  const skipped = [];
-  for (const rule of bundle.rules) {
-    const existing = await findRulePath(rule.id);
-    if (existing && !overwrite) {
-      skipped.push(rule.id);
-      continue;
-    }
-    if (existing) {
-      await updateRule(rule.id, rule);
-    } else {
-      await createRule(rule);
-    }
-    imported.push(rule.id);
-  }
-  if (scopes.length) await writeScopeHierarchy(scopes);
-  return { imported, skipped };
-}
-
-function validateRule(rule, expectedId) {
-  if (!rule || typeof rule !== "object") throw new Error("规则内容必须是对象");
-  if (!ID_PATTERN.test(rule.id) || rule.id !== expectedId) {
-    throw new Error("规则 ID 无效或不可修改");
-  }
-  if (!VALID_STATUSES.has(rule.status)) throw new Error("规则状态无效");
-  if (!rule.title?.trim()) throw new Error("规则标题不能为空");
-  if ((rule.scope?.projects?.length ?? 0) > 1 || (rule.scope?.modules?.length ?? 0) > 1) {
-    throw new Error("作用域只能选择一个项目和一个服务模块");
-  }
-  if (rule.scope?.modules?.length && !rule.scope?.projects?.length) {
-    throw new Error("服务模块必须归属于项目");
-  }
-  if (!rule.instruction?.do?.trim() || !rule.instruction?.avoid?.trim()) {
-    throw new Error("应该怎么做和应该避免均不能为空");
-  }
-}
-
-async function findRulePath(id) {
-  const files = await findRuleFiles();
-  return files.find((file) => path.basename(file, ".json") === id);
-}
-
-function runMemoryCommand(command, memoryRoot = MEMORY_ROOT) {
+function runMemoryCommand(command, args = [], jsonOutput = false) {
   const candidates = process.platform === "win32" ? ["python"] : ["python3", "python"];
   let lastError = "找不到 Python 运行环境";
   for (const executable of candidates) {
     const result = spawnSync(
       executable,
-      ["-X", "utf8", MEMORY_CLI, "--memory-root", memoryRoot, command],
-      { encoding: "utf8", windowsHide: true },
+      ["-X", "utf8", MEMORY_CLI, "--memory-root", MEMORY_ROOT, command, ...args],
+      { encoding: "utf8", windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
     );
     if (result.error?.code === "ENOENT") continue;
-    if (result.status === 0) return;
-    lastError = (result.stderr || result.stdout || "规则校验失败").trim();
+    if (result.status === 0) return jsonOutput ? JSON.parse(result.stdout) : result.stdout;
+    lastError = (result.stderr || result.stdout || result.error?.message || "规则操作失败").trim();
     break;
   }
   throw new Error(lastError);
 }
 
-async function validateImportedRules(rules) {
-  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "super-memory-import-"));
+async function withInput(value, action) {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "super-memory-input-"));
+  const inputPath = path.join(temporaryRoot, "input.json");
   try {
-    runMemoryCommand("init", temporaryRoot);
-    for (const rule of rules) {
-      const directory = path.join(
-        temporaryRoot,
-        "graph",
-        "rules",
-        directoryForStatus(rule.status),
-      );
-      await mkdir(directory, { recursive: true });
-      await writeFile(
-        path.join(directory, `${rule.id}.json`),
-        `${JSON.stringify(rule, null, 2)}\n`,
-        "utf8",
-      );
-    }
-    runMemoryCommand("validate", temporaryRoot);
+    await writeFile(inputPath, JSON.stringify(value), "utf8");
+    return action(inputPath);
   } finally {
+    if (path.dirname(path.resolve(temporaryRoot)) !== path.resolve(os.tmpdir())) {
+      throw new Error("临时目录超出预期范围，清理已停止。");
+    }
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
+async function readRules() {
+  return runMemoryCommand("list", [], true).rules.sort(
+    (a, b) => Number(b.status === "active") - Number(a.status === "active") || a.title.localeCompare(b.title, "zh-CN"),
+  );
+}
+
+async function readScopeHierarchy() {
+  return runMemoryCommand("list", ["--export"], true).scope_hierarchy;
+}
+
+async function exportBundle() {
+  return runMemoryCommand("list", ["--export"], true);
+}
+
+async function importBundle(payload) {
+  const args = payload?.overwrite === true ? ["--overwrite"] : [];
+  return withInput(payload?.bundle ?? null, (inputPath) => runMemoryCommand("import", ["--input", inputPath, ...args], true));
+}
+
 async function updateRule(id, rule) {
-  const files = await findRuleFiles();
-  const originalPath = files.find((file) => path.basename(file, ".json") === id);
-  if (!originalPath) throw new Error("找不到需要编辑的规则");
-
-  const originalContent = await readFile(originalPath, "utf8");
-  const originalRule = JSON.parse(originalContent);
-  const updatedRule = {
-    ...rule,
-    lifecycle: {
-      ...rule.lifecycle,
-      created_at: originalRule.lifecycle.created_at,
-      updated_at: new Date().toISOString(),
-    },
-  };
-  validateRule(updatedRule, id);
-  const targetDirectory = path.join(RULE_ROOT, directoryForStatus(updatedRule.status));
-  const targetPath = path.join(targetDirectory, `${id}.json`);
-  const temporaryPath = `${targetPath}.tmp`;
-
-  await mkdir(targetDirectory, { recursive: true });
-  await writeFile(temporaryPath, `${JSON.stringify(updatedRule, null, 2)}\n`, "utf8");
-  await rename(temporaryPath, targetPath);
-  if (originalPath !== targetPath) await unlink(originalPath);
-
-  try {
-    runMemoryCommand("validate");
-    runMemoryCommand("reindex");
-  } catch (error) {
-    await writeFile(originalPath, originalContent, "utf8");
-    if (originalPath !== targetPath) await unlink(targetPath).catch(() => {});
-    throw error;
-  }
-
-  const event = {
-    event_id: `EVT-${Date.now()}-WEB-EDIT`,
-    time: new Date().toISOString(),
-    action: "updated",
-    node_id: id,
-    actor: "user",
-    reason: "通过 Super Memory 管理台编辑规则",
-  };
-  await appendFile(EVENT_PATH, `${JSON.stringify(event)}\n`, "utf8");
-  return updatedRule;
+  if (!rule || rule.id !== id) throw new Error("规则 ID 无效或不可修改");
+  const expected = rule.lifecycle?.updated_at ?? "null";
+  return withInput(rule, (inputPath) => runMemoryCommand("save", [
+    "--input", inputPath, "--mode", "update", "--expected-updated-at", String(expected),
+    "--reason", "通过 Super Memory 管理台编辑规则", "--json",
+  ], true));
 }
 
 async function createRule(rule) {
-  const now = new Date().toISOString();
-  const createdRule = {
-    ...rule,
-    lifecycle: {
-      ...rule.lifecycle,
-      created_at: now,
-      updated_at: now,
-    },
-  };
-  validateRule(createdRule, createdRule.id);
-  if (await findRulePath(createdRule.id)) throw new Error("规则 ID 已存在");
-
-  const targetDirectory = path.join(RULE_ROOT, directoryForStatus(createdRule.status));
-  const targetPath = path.join(targetDirectory, `${createdRule.id}.json`);
-  const temporaryPath = `${targetPath}.tmp`;
-  await mkdir(targetDirectory, { recursive: true });
-  await writeFile(temporaryPath, `${JSON.stringify(createdRule, null, 2)}\n`, "utf8");
-  await rename(temporaryPath, targetPath);
-
-  try {
-    runMemoryCommand("validate");
-    runMemoryCommand("reindex");
-  } catch (error) {
-    await unlink(targetPath).catch(() => {});
-    throw error;
-  }
-
-  await appendFile(
-    EVENT_PATH,
-    `${JSON.stringify({
-      event_id: `EVT-${Date.now()}-WEB-CREATE`,
-      time: new Date().toISOString(),
-      action: "created",
-      node_id: createdRule.id,
-      actor: "user",
-      reason: "通过 Super Memory 管理台新增规则",
-    })}\n`,
-    "utf8",
-  );
-  return createdRule;
+  return withInput(rule, (inputPath) => runMemoryCommand("save", [
+    "--input", inputPath, "--mode", "create", "--reason", "通过 Super Memory 管理台新增规则", "--json",
+  ], true));
 }
 
 async function deleteRule(id) {
-  if (!ID_PATTERN.test(id)) throw new Error("规则 ID 无效");
-  const sourcePath = await findRulePath(id);
-  if (!sourcePath) throw new Error("找不到需要删除的规则");
-
-  const trashDirectory = path.join(RULE_ROOT, "trash");
-  const trashPath = path.join(trashDirectory, `${id}-${Date.now()}.json`);
-  await mkdir(trashDirectory, { recursive: true });
-  await rename(sourcePath, trashPath);
-
-  try {
-    runMemoryCommand("validate");
-    runMemoryCommand("reindex");
-  } catch (error) {
-    await rename(trashPath, sourcePath);
-    throw error;
-  }
-
-  await appendFile(
-    EVENT_PATH,
-    `${JSON.stringify({
-      event_id: `EVT-${Date.now()}-WEB-DELETE`,
-      time: new Date().toISOString(),
-      action: "deleted-to-trash",
-      node_id: id,
-      actor: "user",
-      reason: "通过 Super Memory 管理台删除规则并移入本地回收区",
-      trash_path: path.relative(MEMORY_ROOT, trashPath).replaceAll("\\", "/"),
-    })}\n`,
-    "utf8",
-  );
+  return runMemoryCommand("delete", ["--id", id, "--reason", "通过 Super Memory 管理台删除规则并移入本地回收区"], true);
 }
+
 
 runMemoryCommand("init");
 
