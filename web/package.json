@@ -13,7 +13,7 @@
     "build": "next build",
     "start": "next start -H 127.0.0.1 -p 3000",
     "lint": "eslint .",
-    "test:api": "node --test ../tests/api-smoke.test.mjs"
+    "test:api": "node --test ../tests/api-smoke.test.mjs ../tests/launcher.test.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.11.2",

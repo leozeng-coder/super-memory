@@ -172,6 +172,8 @@ python ./skills/super-memory/scripts/memory.py init
 
 也可以在 PowerShell、macOS 或 Linux 中分别运行 `./start-super-memory.ps1`、`./start-super-memory.sh`，或直接执行 `node ./start-web.mjs`。
 
+升级后重新启动前，请在原管理台窗口按 `Ctrl+C` 停止旧服务。启动器会检查 API 版本、规则库和端口占用；发现旧实例或其他程序占用端口时，会说明原因并停止启动。启动中途失败时会清理本次拉起的服务。设置 `SUPER_MEMORY_NO_BROWSER=1` 可以启动服务而不自动打开浏览器。
+
 如需把规则数据保存在自定义目录，启动 Codex 和管理台前设置相同的环境变量：
 
 ```powershell
@@ -305,7 +307,7 @@ skills/super-memory/
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
-node --test tests/api-smoke.test.mjs
+node --test tests/api-smoke.test.mjs tests/launcher.test.mjs
 ```
 
 测试使用临时规则库，覆盖检索、作用域、证据保留、并发保存、版本冲突、失败回滚及管理台导入导出，不会改写现有规则。前端校验命令为 `npm --prefix web run lint` 和 `npm --prefix web run build`，需要先安装 Web 依赖。
