@@ -87,6 +87,23 @@ test("API 并发编辑只接受同一版本中的一个修改", async () => with
   assert.equal((await request("GET", "/api/rules")).body.records.length, 1);
 }));
 
+test("API 功能规则支持目录发现、读取及移回服务模块", async () => withApi(async ({ request }) => {
+  const rule = sampleRule();
+  rule.scope = { ...rule.scope, level: "feature", projects: ["server"], modules: ["svr_scene"], features: ["SceneEvent"] };
+  const created = await request("POST", "/api/rules", { rule });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const snapshot = (await request("GET", "/api/rules")).body;
+  assert.equal(snapshot.scopes[0].modules[0].features[0].id, "SceneEvent");
+  assert.deepEqual(snapshot.records[0].rule.scope.features, ["SceneEvent"]);
+  const revised = structuredClone(created.body.rule);
+  revised.scope.level = "module";
+  revised.scope.features = [];
+  const updated = await request("PUT", "/api/rules/" + rule.id, { rule: revised }, created.body.revision);
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.deepEqual(updated.body.rule.evidence, created.body.rule.evidence);
+  assert.equal(updated.body.rule.scope.level, "module");
+}));
+
 test("API 导入整批校验并保留作用域和旧证据", async () => withApi(async ({ request }) => {
   const created = (await request("POST", "/api/rules", { rule: sampleRule() })).body;
   const exported = (await request("GET", "/api/export")).body;

@@ -38,6 +38,16 @@ class CliTests(unittest.TestCase):
         imported = self.run_cli("import", "--input", str(output), "--reason", "测试导入")
         self.assertEqual(imported["imported"], [created["rule"]["id"]])
 
+    def test_feature_catalog_and_cli_scope_arguments(self):
+        rule = sample_rule()
+        rule["scope"].update(level="feature", projects=["server"], modules=["svr_scene"], features=["SceneEvent"])
+        self.run_cli("create", "--reason", "测试功能规则", payload=rule)
+        catalog = self.run_cli("scopes")["scopes"]
+        self.assertEqual(catalog[0]["modules"][0]["features"][0]["id"], "SceneEvent")
+        result = self.run_cli("search", "--query", "新增功能", "--project", "server", "--module", "svr_scene", "--feature", "SceneEvent")
+        self.assertEqual(result["rules"][0]["id"], rule["id"])
+        self.assertEqual(result["context"]["features"], ["SceneEvent"])
+
     def test_update_requires_revision_and_reports_structured_conflicts(self):
         created = self.run_cli("create", "--reason", "测试新增", payload=sample_rule())
         missing = self.run_cli("update", created["rule"]["id"], "--reason", "缺少版本", payload=created["rule"], success=False)

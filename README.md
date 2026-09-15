@@ -60,6 +60,8 @@ Codex 生成或修改代码
 
 检索支持 `C++/cpp/cxx` 等语言别名和中文句子。项目、模块、语言和技术可通过独立参数过滤，项目名和模块名不会作为相关度加分项。`search` 一次返回完整要求、触发条件、例外、冲突关系及规则来源。
 
+作用域可细化为“全部 → 项目 → 服务模块 → 功能模块 → 规则”，例如 `server → svr_scene → SceneEvent`。管理台支持按功能下钻、筛选和编辑；在某个功能下新增规则时会预填该作用域。通用规则留在上层，检索功能时同时保留相关上层规则，过滤其他功能的专用规则。
+
 任务结束前，Codex 还会依据命中的规则做一次自检；如果新的人工纠正具有充分证据，再进入记忆审核流程。
 
 ## 与 Codex 自身持久化能力配合
@@ -209,6 +211,9 @@ Codex、命令行和可视化管理台直接读写同一个记忆目录。`index
 # 显示数据目录；info 不会初始化
 python ./skills/super-memory/scripts/memory.py info
 
+# 查看功能目录、别名与源码路径
+python ./skills/super-memory/scripts/memory.py scopes
+
 # 初始化、校验与重建索引
 python ./skills/super-memory/scripts/memory.py init
 python ./skills/super-memory/scripts/memory.py validate
@@ -228,12 +233,25 @@ python ./skills/super-memory/scripts/memory.py search `
 | --- | --- |
 | `--project` | 当前项目 ID |
 | `--module` | 当前模块，必须同时提供项目；可重复 |
+| `--feature` | 功能 ID 或目录中的别名；须指定项目和一个服务模块，可重复 |
+| `--path` | 项目相对源码路径，按功能目录的通配模式定位；须指定项目和一个服务模块，可重复 |
 | `--language` / `--technology` | 语言或技术过滤；可重复 |
 | `--limit` | 普通匹配规则上限，默认 8 |
 | `--max-chars` | JSON 输出字符预算，默认 16000，最小 512 |
 | `--include-candidates` | 复盘时同时查找候选规则；候选规则不约束代码 |
 
 `search` 固定返回完整要求、例外、来源、匹配依据和内容版本号 `revision`。`omitted_count` 与 `warnings` 说明因预算遗漏的规则；正文和例外不会截断。经用户确认后可设置 `trigger.always_apply: true`，此类 active 规则在完整上下文确认适用后不受普通数量上限影响，字符预算不足时报错。
+
+### 功能定位
+
+功能检索示例（项目、模块和功能须存在于当前规则库）：
+
+```powershell
+python ./skills/super-memory/scripts/memory.py search --query "修改事件触发" --project server --module svr_scene --feature SceneEvent --language cpp
+python ./skills/super-memory/scripts/memory.py search --query "修改事件触发" --project server --module svr_scene --path "svr_scene/src/scene/logic_scene_event.cpp" --language cpp
+```
+
+`context.features` 显示定位结果，`matched_feature` 说明规则通过功能归属命中。未匹配的路径会在 `warnings` 中提示；已知服务模块但未确定功能时，只检索该模块及上层规则。功能规则使用 `scope.level: feature` 和 `scope.features: ["功能 ID"]`，同时填写项目与服务模块。功能目录位于导出快照的 `scope_hierarchy[].modules[].features[]`，条目可包含 `id`、`label`、`aliases` 和项目相对路径模式 `paths`；修改后通过 `import` 导入。
 
 ### 新增、更新与删除
 
@@ -291,6 +309,7 @@ skills/super-memory/
         ├── domain.py             Schema 校验、证据合并和内容版本
         ├── repository.py         文件锁、原子写入和事务恢复
         ├── search.py             作用域、匹配、排序和输出预算
+        ├── scopes.py             功能目录、别名和源码路径定位
         └── service.py            新增、更新、删除及批量操作
 ```
 

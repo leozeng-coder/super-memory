@@ -127,6 +127,11 @@ def validate_rule(rule: Any) -> None:
             errors.append("rule.scope：项目规则必须指定项目")
         if scope["level"] == "module" and not scope["modules"]:
             errors.append("rule.scope：模块规则必须指定模块")
+        features = scope.get("features", [])
+        if features and (not scope["projects"] or not scope["modules"] or scope["level"] != "feature"):
+            errors.append("rule.scope：功能规则必须指定项目、模块，并使用 feature 层级")
+        if scope["level"] == "feature" and not features:
+            errors.append("rule.scope：功能规则必须指定功能")
     if errors:
         raise MemoryError("validation_error", "\n".join(errors))
 
@@ -183,4 +188,23 @@ def normalize_scopes(scopes: Any) -> list:
         if not isinstance(modules, list):
             raise MemoryError("validation_error", "模块必须是数组。")
         normalize(modules, "模块")
+        for module in modules:
+            features = module.setdefault("features", [])
+            if not isinstance(features, list):
+                raise MemoryError("validation_error", "功能必须是数组。")
+            normalize(features, "功能")
+            names = set()
+            for feature in features:
+                for field in ("aliases", "paths"):
+                    values = feature.setdefault(field, [])
+                    if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values):
+                        raise MemoryError("validation_error", f"功能 {field} 必须是非空字符串数组。")
+                    feature[field] = list(dict.fromkeys(value.strip() for value in values))
+                identifiers = {feature["id"].casefold(), *(value.casefold() for value in feature["aliases"])}
+                if names & identifiers:
+                    raise MemoryError("validation_error", "同一模块内的功能名称或别名存在歧义。")
+                names.update(identifiers)
+                for pattern in feature["paths"]:
+                    if pattern.startswith(("/", "\\")) or ":" in pattern or ".." in pattern.replace("\\", "/").split("/"):
+                        raise MemoryError("validation_error", "功能路径须为项目内的相对路径或通配模式。")
     return result

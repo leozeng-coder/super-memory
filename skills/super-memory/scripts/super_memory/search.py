@@ -9,7 +9,7 @@ from pathlib import Path
 from .domain import CHINESE, MemoryError, Record
 
 ALIASES = {"c++": "cpp", "cxx": "cpp", "cplusplus": "cpp", "js": "javascript", "ts": "typescript", "py": "python", "c#": "csharp", "golang": "go", "nodejs": "node.js"}
-SCOPE_ORDER = {"module": 4, "project": 3, "technology": 2, "language": 1, "global": 0}
+SCOPE_ORDER = {"feature": 5, "module": 4, "project": 3, "technology": 2, "language": 1, "global": 0}
 PRIORITY = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 OMITTED = "部分规则因数量或字符预算未返回，请缩小查询范围或增大 --limit / --max-chars。"
 
@@ -37,23 +37,29 @@ class SearchRequest:
     limit: int = 8
     max_chars: int = 16000
     include_candidates: bool = False
+    features: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.limit < 1 or self.max_chars < 512:
             raise MemoryError("validation_error", "--limit 必须大于 0，--max-chars 至少为 512。")
         if self.modules and not self.project:
             raise MemoryError("validation_error", "--module 必须与 --project 一起使用。")
+        if (self.features or self.paths) and (not self.project or len(self.modules) != 1):
+            raise MemoryError("validation_error", "--feature / --path 必须同时指定项目和一个模块。")
 
     def scope(self, rule: dict) -> tuple[bool, bool]:
         known = True
-        for field, requested in (("projects", (self.project,) if self.project else ()), ("modules", self.modules), ("languages", self.languages), ("technologies", self.technologies)):
-            convert = normalize if field in {"projects", "modules"} else technical
-            declared = {convert(value) for value in rule["scope"][field]}
+        for field, requested in (("projects", (self.project,) if self.project else ()), ("modules", self.modules), ("features", self.features), ("languages", self.languages), ("technologies", self.technologies)):
+            convert = normalize if field in {"projects", "modules", "features"} else technical
+            declared = {convert(value) for value in rule["scope"].get(field, [])}
             if declared and not requested:
                 known = False
             if declared and requested and declared.isdisjoint(convert(value) for value in requested):
                 return False, False
         if self.project and not self.modules and rule["scope"]["modules"]:
+            return False, False
+        if self.modules and not self.features and rule["scope"].get("features"):
             return False, False
         return True, known
 
@@ -68,7 +74,7 @@ def match_terms(rule: dict, query: str) -> list[str]:
     return sorted(matched)
 
 
-def search(records: list[Record], request: SearchRequest, root: Path) -> dict:
+def search(records: list[Record], request: SearchRequest, root: Path, routing_warnings: list[str] | None = None) -> dict:
     ranked = []
     for record in records:
         rule = record.rule
@@ -78,14 +84,17 @@ def search(records: list[Record], request: SearchRequest, root: Path) -> dict:
         if not applies:
             continue
         terms = match_terms(rule, request.query)
+        feature_match = bool(request.features and rule["scope"].get("features"))
         required = rule["status"] == "active" and rule["trigger"].get("always_apply", False) and known
-        if terms or required:
+        if terms or required or feature_match:
             score = len(terms) * 10 + PRIORITY[rule["priority"]] + rule["confidence"]
             ranked.append((record, terms, required, score))
     ranked.sort(key=lambda item: (not item[2], item[0].rule["status"] != "active", -item[3], -SCOPE_ORDER[item[0].rule["scope"]["level"]], item[0].rule["id"]))
     result = {"memory_root": str(root), "rules": [], "matched_count": len(ranked), "omitted_count": len(ranked), "warnings": []}
+    if request.features or request.paths:
+        result["context"] = {"project": request.project, "modules": list(request.modules), "features": list(request.features), "paths": list(request.paths)}
     def fits() -> bool:
-        result["warnings"] = [OMITTED] if result["omitted_count"] else []
+        result["warnings"] = [*(routing_warnings or []), *([OMITTED] if result["omitted_count"] else [])]
         return len(json.dumps(result, ensure_ascii=False, indent=2)) + 1 <= request.max_chars
     if not fits():
         raise MemoryError("budget_exceeded", "输出元数据超出预算，请增大 --max-chars。")
@@ -96,6 +105,8 @@ def search(records: list[Record], request: SearchRequest, root: Path) -> dict:
         rule = record.rule
         entry = {key: rule[key] for key in ("id", "title", "status", "priority", "scope", "trigger", "instruction", "exceptions", "relations")}
         entry.update(revision=record.revision, path=record.path.relative_to(root).as_posix(), matched_terms=terms, required=required, score=round(score, 2))
+        if request.features and rule["scope"].get("features"):
+            entry["matched_feature"] = rule["scope"]["features"][0]
         result["rules"].append(entry)
         result["omitted_count"] -= 1
         if not fits():

@@ -15,14 +15,14 @@ def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description="Super Memory：检索、审核后的规则操作和存储维护。")
     command.add_argument("--root", type=Path, help="规则数据目录；优先于 SUPER_MEMORY_HOME")
     actions = command.add_subparsers(dest="command", required=True)
-    for name, help_text in (("info", "显示实际数据目录"), ("init", "初始化规则库"), ("validate", "校验规则与配置"), ("reindex", "重建派生索引"), ("list", "读取规则和作用域快照")):
+    for name, help_text in (("info", "显示实际数据目录"), ("init", "初始化规则库"), ("validate", "校验规则与配置"), ("reindex", "重建派生索引"), ("list", "读取规则和作用域快照"), ("scopes", "查看项目、模块和功能目录")):
         actions.add_parser(name, help=help_text)
     get = actions.add_parser("get", help="读取完整规则及版本号")
     get.add_argument("id")
     search = actions.add_parser("search", help="返回完整规则要求、例外及匹配依据")
     search.add_argument("--query", required=True)
     search.add_argument("--project")
-    for option in ("module", "language", "technology"):
+    for option in ("module", "feature", "path", "language", "technology"):
         search.add_argument("--" + option, action="append", default=[])
     search.add_argument("--limit", type=int, default=8)
     search.add_argument("--max-chars", type=int, default=16000)
@@ -52,12 +52,12 @@ def read_input(value: str):
 def execute(args: argparse.Namespace, service: MemoryService):
     if args.command == "init":
         return service.store.initialize()
-    if args.command in ("info", "list", "validate", "reindex"):
+    if args.command in ("info", "list", "scopes", "validate", "reindex"):
         return getattr(service, args.command)()
     if args.command == "get":
         return service.get(args.id)
     if args.command == "search":
-        return service.search(SearchRequest(args.query, args.project, tuple(args.module), tuple(args.language), tuple(args.technology), args.limit, args.max_chars, args.include_candidates))
+        return service.search(SearchRequest(query=args.query, project=args.project, modules=tuple(args.module), languages=tuple(args.language), technologies=tuple(args.technology), limit=args.limit, max_chars=args.max_chars, include_candidates=args.include_candidates, features=tuple(args.feature), paths=tuple(args.path)))
     if args.command == "create":
         return service.create(read_input(args.input), args.reason)
     if args.command == "update":

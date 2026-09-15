@@ -6,6 +6,7 @@ import uuid
 from .domain import MemoryError, Record, json_bytes, normalize_scopes, now, prepare_rule, require_reason, require_revision, validate_rule
 from .repository import RuleStore
 from .search import SearchRequest, search
+from .scopes import catalog, resolve_features
 
 
 class MemoryService:
@@ -17,7 +18,12 @@ class MemoryService:
 
     def list(self) -> dict:
         with self.store.session():
-            return {"records": [record.public() for record in self.store.records()], "scopes": self.store.config().get("scope_hierarchy", [])}
+            records = self.store.records()
+            return {"records": [record.public() for record in records], "scopes": catalog(self.store.config().get("scope_hierarchy", []), records)}
+
+    def scopes(self) -> dict:
+        with self.store.session():
+            return {"scopes": catalog(self.store.config().get("scope_hierarchy", []), self.store.records())}
 
     def get(self, rule_id: str) -> dict:
         with self.store.session():
@@ -26,7 +32,8 @@ class MemoryService:
     def search(self, request: SearchRequest) -> dict:
         with self.store.session():
             records = self.store.records()
-        return search(records, request, self.store.root)
+            request, warnings = resolve_features(request, catalog(self.store.config().get("scope_hierarchy", []), records))
+        return search(records, request, self.store.root, warnings)
 
     def validate(self) -> dict:
         with self.store.session():

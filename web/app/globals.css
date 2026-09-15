@@ -558,6 +558,7 @@ body { background: var(--bg); color: var(--text); }
 .sidebar-section .scope-child span { font-size: 13px; }
 .sidebar-section .scope-child svg { color: #8299b5; }
 .sidebar-section .scope-child.active svg { color: #2563eb; }
+.sidebar-section .scope-feature { padding-left: 44px; }
 .breadcrumb-segment { display: inline-flex; align-items: center; gap: 2px; }
 
 @media (max-width: 1180px) {

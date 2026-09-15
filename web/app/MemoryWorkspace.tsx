@@ -61,11 +61,12 @@ type Rule = {
   priority: "low" | "medium" | "high" | "critical";
   confidence: number;
   scope: {
-    level: "global" | "language" | "technology" | "project" | "module";
+    level: "global" | "language" | "technology" | "project" | "module" | "feature";
     languages?: string[];
     technologies?: string[];
     projects?: string[];
     modules?: string[];
+    features?: string[];
   };
   trigger: { description: string; keywords: string[]; always_apply?: boolean };
   instruction: { do: string; avoid: string };
@@ -115,12 +116,15 @@ type KnowledgeNodeData = {
   ruleId?: string;
 };
 type KnowledgeNode = Node<KnowledgeNodeData>;
-type ScopeCatalogModule = {
+type ScopeCatalogFeature = {
   id: string;
   label: string;
   created_at: string;
   updated_at: string;
+  aliases?: string[];
+  paths?: string[];
 };
+type ScopeCatalogModule = ScopeCatalogFeature & { features: ScopeCatalogFeature[] };
 type ScopeCatalogProject = {
   id: string;
   label: string;
@@ -150,6 +154,7 @@ const scopeLabel: Record<Rule["scope"]["level"], string> = {
   technology: "技术",
   project: "项目",
   module: "模块",
+  feature: "功能模块",
 };
 
 function formatDate(value?: string | null) {
@@ -198,6 +203,10 @@ function ruleModule(rule: Rule) {
   return rule.scope.modules?.[0]?.trim() || "";
 }
 
+function ruleFeature(rule: Rule) {
+  return rule.scope.features?.[0]?.trim() || "";
+}
+
 function projectScopeId(project: string) {
   return `project:${project}`;
 }
@@ -206,10 +215,14 @@ function moduleScopeId(project: string, moduleName: string) {
   return `module:${project}/${moduleName}`;
 }
 
+function featureScopeId(project: string, moduleName: string, feature: string) {
+  return `feature:${project}/${moduleName}/${feature}`;
+}
+
 function scopeSummary(rule: Rule) {
   const project = ruleProject(rule);
   const moduleName = ruleModule(rule);
-  const path = [project || "全部", moduleName].filter(Boolean).join(" › ");
+  const path = [project || "全部", moduleName, ruleFeature(rule)].filter(Boolean).join(" › ");
   const details = Array.from(new Set([
     ...(rule.scope.languages ?? []),
     ...(rule.scope.technologies ?? []),
@@ -226,6 +239,9 @@ function ruleMatchesScope(rule: Rule, scopeId: string) {
   }
   if (scopeId.startsWith("module:")) {
     return `${project}/${moduleName}` === scopeId.slice("module:".length);
+  }
+  if (scopeId.startsWith("feature:")) {
+    return `${project}/${moduleName}/${ruleFeature(rule)}` === scopeId.slice("feature:".length);
   }
   return false;
 }
@@ -314,7 +330,7 @@ function buildScopeHierarchy(rules: Rule[], scopeCatalog: ScopeCatalogProject[])
       const moduleRules = projectRules.filter((rule) => ruleModule(rule) === module);
       const moduleId = moduleScopeId(project, module);
       const moduleCatalog = projectCatalog?.modules.find((item) => item.id === module);
-      projectNode.children.push({
+      const moduleNode: HierarchyItem = {
         id: moduleId,
         kind: "scope",
         label: module,
@@ -324,7 +340,7 @@ function buildScopeHierarchy(rules: Rule[], scopeCatalog: ScopeCatalogProject[])
         sourceRules: moduleRules,
         createdAt: moduleCatalog?.created_at,
         updatedAt: moduleCatalog?.updated_at,
-        children: moduleRules.map((rule) => ({
+        children: moduleRules.filter((rule) => !ruleFeature(rule)).map((rule) => ({
           id: `rule-${rule.id}`,
           kind: "rule",
           label: rule.title,
@@ -334,7 +350,26 @@ function buildScopeHierarchy(rules: Rule[], scopeCatalog: ScopeCatalogProject[])
           sourceRules: [rule],
           children: [],
         })),
-      });
+      };
+      const features = Array.from(new Set(moduleRules.map(ruleFeature).filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b, "zh-CN"));
+      for (const feature of features) {
+        const featureRules = moduleRules.filter((rule) => ruleFeature(rule) === feature);
+        const featureId = featureScopeId(project, module, feature);
+        const featureCatalog = moduleCatalog?.features.find((item) => item.id === feature);
+        moduleNode.children.unshift({
+          id: featureId, kind: "scope", label: featureCatalog?.label || feature,
+          caption: `${featureRules.length} 条功能记忆 · 点击下钻`, parentId: moduleId,
+          scopeKey: featureId, sourceRules: featureRules,
+          createdAt: featureCatalog?.created_at, updatedAt: featureCatalog?.updated_at,
+          children: featureRules.map((rule) => ({
+            id: `rule-${rule.id}`, kind: "rule", label: rule.title,
+            caption: `${statusLabel[rule.status]} · ${priorityLabel[rule.priority]}优先级`,
+            parentId: featureId, rule, sourceRules: [rule], children: [],
+          })),
+        });
+      }
+      projectNode.children.push(moduleNode);
     });
 
     projectNode.children.push(...projectRules
@@ -380,6 +415,9 @@ function hierarchyBreadcrumb(scopeId: string) {
   if (scopeId.startsWith("project:")) return [scopeId.slice("project:".length)];
   if (scopeId.startsWith("module:")) {
     return scopeId.slice("module:".length).split("/");
+  }
+  if (scopeId.startsWith("feature:")) {
+    return scopeId.slice("feature:".length).split("/");
   }
   return [];
 }
@@ -474,7 +512,8 @@ function StatusBadge({ status }: { status: Status }) {
   );
 }
 
-function newRuleDraft(): Rule {
+function newRuleDraft(scopeId = ""): Rule {
+  const [project, moduleName, feature] = hierarchyBreadcrumb(scopeId);
   const timestamp = Date.now();
   const now = new Date().toISOString();
   return {
@@ -485,11 +524,12 @@ function newRuleDraft(): Rule {
     priority: "medium",
     confidence: 0.7,
     scope: {
-      level: "global",
+      level: feature ? "feature" : moduleName ? "module" : project ? "project" : "global",
       languages: [],
       technologies: [],
-      projects: [],
-      modules: [],
+      projects: project ? [project] : [],
+      modules: moduleName ? [moduleName] : [],
+      features: feature ? [feature] : [],
     },
     trigger: { description: "", keywords: [] },
     instruction: { do: "", avoid: "" },
@@ -583,9 +623,10 @@ function RuleEditor({
       ...current,
       scope: {
         ...current.scope,
-        level: value ? (current.scope.modules?.[0] ? "module" : "project") : "global",
+        level: value ? "project" : "global",
         projects: value ? [value] : [],
-        modules: value ? current.scope.modules : [],
+        modules: [],
+        features: [],
       },
     }));
 
@@ -596,8 +637,21 @@ function RuleEditor({
         ...current.scope,
         level: value ? "module" : current.scope.projects?.[0] ? "project" : "global",
         modules: value ? [value] : [],
+        features: [],
       },
     }));
+
+  const setScopeFeature = (value: string) =>
+    setDraft((current) => ({
+      ...current,
+      scope: {
+        ...current.scope,
+        level: value ? "feature" : "module",
+        features: value ? [value] : [],
+      },
+    }));
+  const selectedModules = scopeCatalog.find((project) => project.id === draft.scope.projects?.[0])?.modules || [];
+  const selectedFeatures = selectedModules.find((module) => module.id === draft.scope.modules?.[0])?.features || [];
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -638,9 +692,14 @@ function RuleEditor({
             <datalist id="scope-project-options">{scopeCatalog.map((project) => <option key={project.id} value={project.id} />)}</datalist>
           </label>
           <label className="field">
-            <span>模块层级（最低层级）</span>
+            <span>服务模块（留空表示整个项目）</span>
             <input list="scope-module-options" placeholder="例如：scene、gateway" disabled={!draft.scope.projects?.[0]} value={draft.scope.modules?.[0] ?? ""} onChange={(event) => setScopeModule(event.target.value.trim())} />
-            <datalist id="scope-module-options">{scopeCatalog.flatMap((project) => project.modules).map((module) => <option key={module.id} value={module.id} />)}</datalist>
+            <datalist id="scope-module-options">{selectedModules.map((module) => <option key={module.id} value={module.id} />)}</datalist>
+          </label>
+          <label className="field">
+            <span>功能模块（留空表示整个服务模块）</span>
+            <input list="scope-feature-options" placeholder="例如：SceneEvent" disabled={!draft.scope.modules?.[0]} value={draft.scope.features?.[0] ?? ""} onChange={(event) => setScopeFeature(event.target.value.trim())} />
+            <datalist id="scope-feature-options">{selectedFeatures.map((feature) => <option key={feature.id} value={feature.id}>{feature.label}</option>)}</datalist>
           </label>
           <label className="field field-span">
             <span>触发条件</span>
@@ -883,6 +942,12 @@ export function MemoryWorkspace() {
           id: moduleScopeId(project, module),
           label: module,
           count: rules.filter((rule) => ruleProject(rule) === project && ruleModule(rule) === module).length,
+          features: Array.from(new Set(rules.filter((rule) => ruleProject(rule) === project && ruleModule(rule) === module).map(ruleFeature).filter(Boolean)))
+            .sort((a, b) => a.localeCompare(b, "zh-CN"))
+            .map((feature) => ({
+              id: featureScopeId(project, module, feature), label: feature,
+              count: rules.filter((rule) => ruleProject(rule) === project && ruleModule(rule) === module && ruleFeature(rule) === feature).length,
+            })),
         })),
     }));
   }, [rules]);
@@ -1038,9 +1103,16 @@ export function MemoryWorkspace() {
                 <Boxes size={17} /><span>{project.label}</span><em>{project.count}</em>
               </button>
               {project.modules.map((module) => (
-                <button className={`scope-child ${scopeFilter === module.id ? "active" : ""}`} key={module.id} onClick={() => selectScope(module.id)}>
-                  <GitBranch size={15} /><span>{module.label}</span><em>{module.count}</em>
-                </button>
+                <div className="scope-tree-group" key={module.id}>
+                  <button className={`scope-child ${scopeFilter === module.id ? "active" : ""}`} onClick={() => selectScope(module.id)}>
+                    <GitBranch size={15} /><span>{module.label}</span><em>{module.count}</em>
+                  </button>
+                  {module.features.map((feature) => (
+                    <button className={`scope-child scope-feature ${scopeFilter === feature.id ? "active" : ""}`} key={feature.id} onClick={() => selectScope(feature.id)}>
+                      <GitBranch size={14} /><span>{feature.label}</span><em>{feature.count}</em>
+                    </button>
+                  ))}
+                </div>
               ))}
             </div>
           ))}
@@ -1080,7 +1152,8 @@ export function MemoryWorkspace() {
               {focusedBreadcrumb.map((label, index) => {
                 const target = index === 0
                   ? projectScopeId(label)
-                  : moduleScopeId(focusedBreadcrumb[0], label);
+                  : index === 1 ? moduleScopeId(focusedBreadcrumb[0], label)
+                    : featureScopeId(focusedBreadcrumb[0], focusedBreadcrumb[1], label);
                 return <span className="breadcrumb-segment" key={target}><ChevronRight size={13} /><button className="graph-breadcrumb" onClick={() => { setGraphDisplayMode("level"); setFocusedScope(target); }}>{label}</button></span>;
               })}
               <em>{graphDisplayMode === "level" ? `${focusedHierarchyItem?.children.length ?? 0} 个子节点` : `${filteredRules.length} 个规则节点`}</em>
@@ -1123,7 +1196,7 @@ export function MemoryWorkspace() {
       </section>
 
       {selectedRecord && <RuleDetail rule={selectedRecord.rule} rules={rules} onClose={() => setSelectedId("")} onEdit={() => setEditorMode("edit")} onDelete={() => deleteRule(selectedRecord)} onSelect={setSelectedId} />}
-      {editorMode && <RuleEditor key={editorMode + ":" + selectedId} initial={editorMode === "edit" && selected ? selected : newRuleDraft()} revision={editorMode === "edit" ? selectedRecord?.revision : undefined} mode={editorMode} scopeCatalog={scopeCatalog} onClose={() => setEditorMode(null)} onSaved={handleSaved} />}
+      {editorMode && <RuleEditor key={editorMode + ":" + selectedId} initial={editorMode === "edit" && selected ? selected : newRuleDraft(scopeFilter === "all" ? focusedScope : scopeFilter)} revision={editorMode === "edit" ? selectedRecord?.revision : undefined} mode={editorMode} scopeCatalog={scopeCatalog} onClose={() => setEditorMode(null)} onSaved={handleSaved} />}
     </main>
   );
 }
