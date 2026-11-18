@@ -31,6 +31,8 @@ Super Memory 将这个过程组织成闭环：
         ↓
 Codex 生成或修改代码
         ↓
+根据实际改动再次检索，合并两轮条款逐条审查，修正后复查
+        ↓
 人工审查 / 测试失败 / 故障证据
         ↓
 检测是否具有通用性并生成中文记忆审核草案
@@ -44,7 +46,7 @@ Codex 生成或修改代码
 
 ![Codex 生成持久化记忆审核草案](./docs/images/super-memory-review-draft.png)
 
-当人工审查、测试结果或故障证据揭示了可复现问题时，Super Memory 不会直接写入规则库，而是先让 Codex 生成中文审核草案。草案包含规则、证据、适用范围、例外、评分和建议状态，并明确提供三个选择：
+当人工审查、测试结果或故障证据揭示了可复现问题时，Codex 先生成中文审核草案，列出规则、证据、适用范围、评分和建议状态。已查明的原因和会改变做法的例外按需补充。用户可以选择：
 
 - `保存为 active`：立即作为生效规则参与后续编码；
 - `保存为 candidate`：保留为候选经验，只用于提示和继续观察；
@@ -52,17 +54,17 @@ Codex 生成或修改代码
 
 只有用户明确确认后，规则才会落库。
 
-## 编码前自动检索
+## 编码前检索与交付前审查
 
 ![Codex 在编码前检索 Super Memory 规则](./docs/images/super-memory-rule-retrieval.png)
 
 配置自动调用后，Codex 在代码生成、修改、调试或审查开始前，会按语言、技术、项目、模块和操作关键词检索最相关的生效规则。命中的规则进入本次任务上下文，候选规则只作提示，不会直接约束代码生成。
 
-检索支持 `C++/cpp/cxx` 等语言别名和中文句子。项目、模块、语言和技术可通过独立参数过滤，项目名和模块名不会作为相关度加分项。`search` 一次返回完整要求、触发条件、例外、冲突关系及规则来源。
+Codex 在第一轮从当前需求提取符号、行为和约束，第二轮从实际改动提取，只把与本次任务有关的信息写入查询。命令行也会过滤明确标为“无关背景：……”的独立句子。检索支持中文、代码标识符和 `C++/cpp/cxx` 等语言别名，项目、模块、语言和技术可通过独立参数过滤。
 
 作用域可细化为“全部 → 项目 → 服务模块 → 功能模块 → 规则”，例如 `server → svr_scene → SceneEvent`。管理台支持按功能下钻、筛选和编辑；在某个功能下新增规则时会预填该作用域。通用规则留在上层，检索功能时同时保留相关上层规则，过滤其他功能的专用规则。
 
-任务结束前，Codex 还会依据命中的规则做一次自检；如果新的人工纠正具有充分证据，再进入记忆审核流程。
+交付前，Codex 读取实际差异和新增文件，按最终涉及的功能、符号和行为执行 `review`。它接受与 `search` 相同的查询参数，`--before` 可传入首轮命中的多个 ID。返回的 `search` 是本次检索结果，`review_ids` 是两轮按 ID 去重的待审清单。Codex 对照代码与例外逐条判断，修正确认的问题并复查。多个关注点可连续查询，每次带上已有清单。具体操作见 [Skill 工作流](./skills/super-memory/SKILL.md#生成后按实际改动审查)。
 
 ## 与 Codex 自身持久化能力配合
 
@@ -136,10 +138,10 @@ Super Memory 不会自动修改 Codex 原生的 `~/.codex/memories/`、`MEMORY.m
 ### 配置后会达到什么效果
 
 - 开始代码生成、修改、调试或审查前，Codex 会先按语言、技术、项目、模块和操作检索相关 `active` 规则；
-- 只加载匹配度最高的规则，避免把整个规则库塞入任务上下文；
+- 必查条款和主题直接命中的条款会展开行动指令。仅因同属一个功能而入选的条款先看标题和触发条件，与当前任务有关或尚不能排除时再读全文；
 - 在不冲突用户当前明确指令的前提下，`active` 规则可以约束本次实现，`candidate` 只用于提示，不会直接约束代码；
 - 没有匹配规则时安静继续，不影响正常编码；
-- 完成修改后，Codex 会依据命中的规则自检；
+- 完成修改后，Codex 会根据实际改动再次检索，逐条核对两轮命中条款，修正问题后复查；
 - 遇到有充分证据的新经验时，Codex 先展示中文审核草案，只有用户明确选择 `active` 或 `candidate` 后才保存；
 - 整个过程只读写 Super Memory 规则库，不会修改 Codex 原生 Memories 或其他工具的持久化记忆。
 
@@ -194,7 +196,7 @@ graph/rules/candidate/
 graph/rules/archive/
 ```
 
-Codex、命令行和可视化管理台直接读写同一个记忆目录。`indexes/rules.json` 只是可以随时重建的派生索引，`graph/rules/trash` 是不参与检索的本地回收区。
+Codex、命令行和管理台共用同一个记忆目录。每次检索都会读取当前的规则 JSON，按作用域和状态筛选，再根据查询中的标识符、关键词和同义表达匹配条款。`indexes/rules.json` 保存规则 ID、标题、状态、作用域等目录信息，可用 `reindex` 重建。移入 `graph/rules/trash` 的规则退出检索。
 
 规则数据目录按以下顺序确定：
 
@@ -219,7 +221,7 @@ python ./skills/super-memory/scripts/memory.py init
 python ./skills/super-memory/scripts/memory.py validate
 python ./skills/super-memory/scripts/memory.py reindex
 
-# 读取完整规则要求和例外
+# 按开发任务检索规则
 python ./skills/super-memory/scripts/memory.py search `
   --query "异步回调 shared_ptr 生命周期" `
   --project my-project `
@@ -227,7 +229,7 @@ python ./skills/super-memory/scripts/memory.py search `
   --language cpp
 ```
 
-项目和模块须替换为实际 ID。未提供的作用域不会自动推断；指定项目但模块未知时，只返回项目及更广范围的规则。
+项目和模块须替换为实际 ID。检索已知项目及单个模块时，查询中出现唯一、完整的功能 ID 或别名可自动定位功能；除此以外不会猜测未提供的作用域。指定项目但模块未知时，只返回项目及更广范围的规则。
 
 | 参数 | 用途 |
 | --- | --- |
@@ -236,26 +238,42 @@ python ./skills/super-memory/scripts/memory.py search `
 | `--feature` | 功能 ID 或目录中的别名；须指定项目和一个服务模块，可重复 |
 | `--path` | 项目相对源码路径，按功能目录的通配模式定位；须指定项目和一个服务模块，可重复 |
 | `--language` / `--technology` | 语言或技术过滤；可重复 |
-| `--limit` | 普通匹配规则上限，默认 8 |
-| `--max-chars` | JSON 输出字符预算，默认 16000，最小 512 |
+| `--limit` | 普通匹配规则上限，默认 12 |
+| `--full` | 输出完整检索字段，用于审核或调试 |
+| `--max-chars` | JSON 输出字符预算，默认 32000，最小 512 |
 | `--include-candidates` | 复盘时同时查找候选规则；候选规则不约束代码 |
+| `--before ID [ID ...]` | `review` 用它接收前一轮的规则 ID。前一轮为空时省略 |
 
-`search` 固定返回完整要求、例外、来源、匹配依据和内容版本号 `revision`。`omitted_count` 与 `warnings` 说明因预算遗漏的规则；正文和例外不会截断。经用户确认后可设置 `trigger.always_apply: true`，此类 active 规则在完整上下文确认适用后不受普通数量上限影响，字符预算不足时报错。
+项目专用术语可在本地 `memory.config.json` 的 `search_concepts` 中配置为“概念名 → 同义词数组”。该文件已被 Git 忽略，同义词会随本地导入、导出保留，不会进入开源功能代码。
+
+`search` 与 `review` 默认对必查和主题直接命中的条款返回完整指令、例外及非空关系。仅因同功能入选的条款返回标题和触发条件（`preview: true`），按需用 `get <ID>` 展开。两轮命中的预览 ID 也进入待审清单。`--full` 可显示所有返回条款的完整检索字段。如果 `omitted_count` 大于零，查看 `warnings`，缩小查询范围或提高 `--limit`、`--max-chars` 后重查。经用户确认后可设置 `trigger.always_apply: true`，此类 active 规则在完整上下文确认适用后不受普通数量上限影响，字符预算不足时报错。
 
 ### 功能定位
 
-功能检索示例（项目、模块和功能须存在于当前规则库）：
+以 `server → svr_scene → SceneEvent` 为例。假设需求是让概率跳过的事件保留后续节点的延迟顺序，最终改动还涉及用 `MapUid` 校验目标地图实例。下面的 PowerShell 示例可在仓库根目录运行，项目、模块、功能与源码路径需已登记在当前规则库中。
 
 ```powershell
-python ./skills/super-memory/scripts/memory.py search --query "修改事件触发" --project server --module svr_scene --feature SceneEvent --language cpp
-python ./skills/super-memory/scripts/memory.py search --query "修改事件触发" --project server --module svr_scene --path "svr_scene/src/scene/logic_scene_event.cpp" --language cpp
+$cli = './skills/super-memory/scripts/memory.py'
+$scope = @('--project', 'server', '--module', 'svr_scene', '--language', 'cpp')
+$first = python $cli search @scope --feature SceneEvent --query 'DelayMs 概率跳过时保留后续节点的延迟顺序' | ConvertFrom-Json
+$first.rules | ConvertTo-Json -Depth 8
+
+$before = @()
+if ($first.rules.Count -gt 0) {
+    $before = @('--before') + @($first.rules.id)
+}
+python $cli review @scope --path 'svr_scene/src/scene/logic_scene_event.cpp' --query 'MapUid 校验目标地图实例' @before
 ```
+
+第二轮返回的 `review_ids` 包含两轮命中的所有条款，每个 ID 只出现一次。对照最终改动逐条判断，预览的触发条件仍可能适用时，用 `python $cli get <ID>` 读取正文和例外。修正问题后重新核对受影响的条款。若修正又涉及新的符号或行为，将已有 `review_ids` 传给下一次 `review`。
 
 `context.features` 显示定位结果，`matched_feature` 说明规则通过功能归属命中。未匹配的路径会在 `warnings` 中提示；已知服务模块但未确定功能时，只检索该模块及上层规则。功能规则使用 `scope.level: feature` 和 `scope.features: ["功能 ID"]`，同时填写项目与服务模块。功能目录位于导出快照的 `scope_hierarchy[].modules[].features[]`，条目可包含 `id`、`label`、`aliases` 和项目相对路径模式 `paths`；修改后通过 `import` 导入。
 
 ### 新增、更新与删除
 
 规则由 [Schema](./skills/super-memory/assets/memory-rule.schema.json) 定义，程序直接读取这一份定义进行校验。规则 JSON 的 `status` 决定生效、候选、弃用或归档状态；审核步骤见 [Skill](./skills/super-memory/SKILL.md)。
+
+规则的行动要求写在必填的 `instruction.do`。有具体禁忌时再写 `instruction.avoid`，有已知例外时再写 `exceptions`。`rationale` 也可省略，填写时用 `problem` 描述问题，有证据时再补 `root_cause`。
 
 ```powershell
 # 新增已审核的完整规则

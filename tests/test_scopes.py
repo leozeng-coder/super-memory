@@ -7,6 +7,7 @@ from support import sample_rule
 from super_memory.domain import MemoryError, normalize_scopes, validate_rule
 from super_memory.repository import RuleStore
 from super_memory.search import SearchRequest
+from super_memory.scopes import resolve_features
 from super_memory.service import MemoryService
 
 
@@ -23,7 +24,7 @@ class FeatureScopeTests(unittest.TestCase):
             rule["id"] = "RULE-" + name
             rule["scope"].update(level="feature" if feature else "module" if module else "project" if project else "global", projects=[project] if project else [], modules=[module] if module else [], features=[feature] if feature else [])
             rules.append(rule)
-        self.service.import_bundle({"format": "super-memory-export", "schema_version": 1, "rules": rules, "scope_hierarchy": [{"id": "server", "modules": [{"id": "svr_scene", "features": [{"id": "SceneEvent", "aliases": ["场景事件"], "paths": ["svr_scene/src/scene/logic_scene_event*"]}]}]}]}, "skip", "测试功能分类")
+        self.service.import_bundle({"format": "super-memory-export", "schema_version": 1, "rules": rules, "scope_hierarchy": [{"id": "server", "modules": [{"id": "svr_scene", "features": [{"id": "SceneEvent", "aliases": ["场景事件", "LogicSceneEvent"], "paths": ["svr_scene/src/scene/logic_scene_event*"]}]}]}], "search_concepts": {"事件阶段": ["event phase", "处理阶段"]}}, "skip", "测试功能分类")
 
     def search(self, query="unittest", **kwargs):
         return self.service.search(SearchRequest(query, project="server", modules=("svr_scene",), **kwargs))
@@ -50,6 +51,42 @@ class FeatureScopeTests(unittest.TestCase):
         self.assertTrue(unknown["warnings"])
         self.assertNotIn("RULE-EVENT", {r["id"] for r in unknown["rules"]})
 
+    def test_feature_alias_identifier_variants_and_query_inference(self):
+        for alias in ("SceneEvent", "scene_event", "scene-event", "LogicSceneEvent", "logic_scene_event", "LogicSceneEvent::execute", "LogicSceneEvent.execute", "SceneEventHandler", "handle_scene_event_result"):
+            result = self.search("修改 " + alias)
+            self.assertEqual(result["context"]["features"], ["SceneEvent"], alias)
+            self.assertIn("RULE-EVENT", {item["id"] for item in result["rules"]}, alias)
+
+    def test_overlapping_feature_names_choose_only_unshadowed_mentions(self):
+        scopes = normalize_scopes([{"id": "server", "modules": [{"id": "scene", "features": [
+            {"id": "Event", "aliases": ["事件"]},
+            {"id": "SceneEvent", "aliases": ["场景事件"]},
+        ]}]}])
+        for query in ("修改 SceneEvent", "修改 scene_event", "修改场景事件"):
+            resolved, _ = resolve_features(SearchRequest(query, project="server", modules=("scene",)), scopes)
+            self.assertEqual(resolved.features, ("SceneEvent",), query)
+
+    def test_unknown_project_or_module_returns_routing_warning(self):
+        project = self.service.search(SearchRequest("unittest", project="sever"))
+        module = self.service.search(SearchRequest("unittest", project="server", modules=("svr_sence",)))
+        self.assertTrue(any("项目作用域 sever" in warning for warning in project["warnings"]))
+        self.assertTrue(any("服务模块作用域 svr_sence" in warning for warning in module["warnings"]))
+
+    def test_only_task_text_routes_features(self):
+        clean = self.search("调整 Motion")
+        mixed = self.search("调整 Motion。无关背景：SceneEvent。")
+        self.assertEqual(clean, mixed)
+        self.assertEqual(clean["context"]["features"], ["Motion"])
+        related = self.search("参考历史工单，SceneEvent 不能切换为 Motion")
+        self.assertCountEqual(related["context"]["features"], ["SceneEvent", "Motion"])
+        with self.assertRaises(MemoryError):
+            self.search("无关背景：SceneEvent。")
+
+    def test_workspace_relative_path_may_include_project_prefix(self):
+        result = self.search(paths=("server/svr_scene/src/scene/logic_scene_event.cpp",))
+        self.assertEqual(result["context"]["features"], ["SceneEvent"])
+        self.assertIn("RULE-EVENT", {item["id"] for item in result["rules"]})
+
     def test_feature_discovery_merges_rules_without_inventing_routing(self):
         scopes = self.service.scopes()["scopes"]
         module = next(m for m in scopes[0]["modules"] if m["id"] == "svr_scene")
@@ -68,6 +105,8 @@ class FeatureScopeTests(unittest.TestCase):
             self.search(paths=("../other/file.cpp",))
         with self.assertRaises(MemoryError):
             normalize_scopes([{"id": "server", "modules": [{"id": "scene", "features": [{"id": "SceneEvent", "aliases": ["event"]}, {"id": "Other", "aliases": ["EVENT"]}]}]}])
+        with self.assertRaises(MemoryError):
+            normalize_scopes([{"id": "server", "modules": [{"id": "scene", "features": [{"id": "SceneEvent", "aliases": []}, {"id": "Other", "aliases": ["scene_event"]}]}]}])
 
     def test_schema_requires_complete_feature_ancestry(self):
         valid = self.service.get("RULE-EVENT")["rule"]
@@ -80,6 +119,7 @@ class FeatureScopeTests(unittest.TestCase):
 
     def test_export_import_keeps_feature_routes_and_evidence(self):
         exported = self.service.export()
+        self.assertEqual(exported["search_concepts"], {"事件阶段": ["event phase", "处理阶段"]})
         record = self.service.get("RULE-EVENT")
         self.service.delete("RULE-EVENT", record["revision"], "测试功能导出恢复")
         self.service.import_bundle(exported, "skip", "恢复功能规则")

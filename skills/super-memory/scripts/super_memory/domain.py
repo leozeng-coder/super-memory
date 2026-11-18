@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -15,6 +16,15 @@ SKILL_ROOT = Path(__file__).resolve().parents[2]
 RULE_ID = re.compile(r"^RULE-[A-Z0-9][A-Z0-9-]*$")
 CHINESE = re.compile(r"[\u3400-\u9fff]")
 STATUSES = ("candidate", "active", "suspect", "deprecated", "superseded", "archived")
+
+
+def normalize_text(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).casefold().strip()
+
+
+def identifier_key(value: str) -> str:
+    """Return a separator- and case-insensitive key for configured identifiers."""
+    return "".join(character for character in normalize_text(value) if character.isalnum())
 
 
 class MemoryError(Exception):
@@ -200,7 +210,12 @@ def normalize_scopes(scopes: Any) -> list:
                     if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values):
                         raise MemoryError("validation_error", f"功能 {field} 必须是非空字符串数组。")
                     feature[field] = list(dict.fromkeys(value.strip() for value in values))
-                identifiers = {feature["id"].casefold(), *(value.casefold() for value in feature["aliases"])}
+                identifiers = {
+                    key
+                    for value in (feature["id"], *feature["aliases"])
+                    for key in (normalize_text(value), identifier_key(value))
+                    if key
+                }
                 if names & identifiers:
                     raise MemoryError("validation_error", "同一模块内的功能名称或别名存在歧义。")
                 names.update(identifiers)

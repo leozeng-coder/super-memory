@@ -11,7 +11,7 @@ from pathlib import Path
 from .domain import MemoryError, Record, SKILL_ROOT, json_bytes, now, validate_rule
 
 RULE_DIRECTORIES = ("active", "candidate", "archive")
-CONFIG = {"schema_version": 1, "scope_hierarchy": [], "source_projects": []}
+CONFIG = {"schema_version": 1, "scope_hierarchy": [], "source_projects": [], "search_concepts": {}}
 
 
 def resolve_root(explicit: Path | None = None) -> Path:

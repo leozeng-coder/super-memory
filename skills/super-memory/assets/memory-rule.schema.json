@@ -14,8 +14,6 @@
     "scope",
     "trigger",
     "instruction",
-    "rationale",
-    "exceptions",
     "relations",
     "evidence",
     "lifecycle",
@@ -188,8 +186,7 @@
     "instruction": {
       "type": "object",
       "required": [
-        "do",
-        "avoid"
+        "do"
       ],
       "properties": {
         "do": {
@@ -205,8 +202,7 @@
     "rationale": {
       "type": "object",
       "required": [
-        "problem",
-        "root_cause"
+        "problem"
       ],
       "properties": {
         "problem": {

@@ -69,9 +69,9 @@ type Rule = {
     features?: string[];
   };
   trigger: { description: string; keywords: string[]; always_apply?: boolean };
-  instruction: { do: string; avoid: string };
-  rationale: { problem: string; root_cause: string };
-  exceptions: Array<{ condition: string; requirement: string }>;
+  instruction: { do: string; avoid?: string };
+  rationale?: { problem: string; root_cause?: string };
+  exceptions?: Array<{ condition: string; requirement: string }>;
   relations: {
     conflicts_with?: string[];
     supersedes?: string[];
@@ -532,8 +532,7 @@ function newRuleDraft(scopeId = ""): Rule {
       features: feature ? [feature] : [],
     },
     trigger: { description: "", keywords: [] },
-    instruction: { do: "", avoid: "" },
-    rationale: { problem: "待补充", root_cause: "待补充" },
+    instruction: { do: "" },
     exceptions: [],
     relations: { conflicts_with: [], supersedes: [], replacement: null },
     evidence: [
@@ -583,8 +582,8 @@ function RuleEditor({
   const [error, setError] = useState("");
 
   async function save() {
-    if (!draft.title.trim() || !draft.instruction.do.trim() || !draft.instruction.avoid.trim()) {
-      setError("请完整填写规则标题、应该怎么做和应该避免。");
+    if (!draft.title.trim() || !draft.instruction.do.trim()) {
+      setError("请完整填写规则标题和应该怎么做。");
       return;
     }
     if (!draft.trigger.description.trim() || !draft.trigger.keywords.length) {
@@ -599,7 +598,12 @@ function RuleEditor({
         {
           method: mode === "create" ? "POST" : "PUT",
           headers: { "Content-Type": "application/json", ...(mode === "edit" && expectedRevision ? { "If-Match": expectedRevision } : {}) },
-          body: JSON.stringify({ rule: draft }),
+          body: JSON.stringify({
+            rule: {
+              ...draft,
+              instruction: { ...draft.instruction, avoid: draft.instruction.avoid?.trim() ? draft.instruction.avoid : undefined },
+            },
+          }),
         },
       );
       const result = await response.json();
@@ -714,8 +718,8 @@ function RuleEditor({
             <textarea rows={3} value={draft.instruction.do} onChange={(event) => setInstruction("do", event.target.value)} />
           </label>
           <label className="field field-span">
-            <span>应该避免</span>
-            <textarea rows={3} value={draft.instruction.avoid} onChange={(event) => setInstruction("avoid", event.target.value)} />
+            <span>应该避免（选填）</span>
+            <textarea rows={3} value={draft.instruction.avoid ?? ""} onChange={(event) => setInstruction("avoid", event.target.value)} />
           </label>
           <label className="field field-span">
             <span>标签（逗号分隔）</span>
@@ -796,7 +800,7 @@ function RuleDetail({
         <section className="detail-section">
           <h3><Check size={15} />规则指令</h3>
           <div className="directive directive-do"><small>应该</small><p>{rule.instruction.do}</p></div>
-          <div className="directive directive-avoid"><small>避免</small><p>{rule.instruction.avoid}</p></div>
+          {rule.instruction.avoid && <div className="directive directive-avoid"><small>避免</small><p>{rule.instruction.avoid}</p></div>}
         </section>
 
         <section className="detail-section">

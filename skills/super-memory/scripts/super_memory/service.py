@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import copy
 import uuid
+from dataclasses import replace
 
 from .domain import MemoryError, Record, json_bytes, normalize_scopes, now, prepare_rule, require_reason, require_revision, validate_rule
 from .repository import RuleStore
-from .search import SearchRequest, search
+from .search import SearchRequest, normalize_search_concepts, search, task_query
 from .scopes import catalog, resolve_features
 
 
@@ -30,15 +31,20 @@ class MemoryService:
             return self.store.get(rule_id).public()
 
     def search(self, request: SearchRequest) -> dict:
+        request = replace(request, query=task_query(request.query))
         with self.store.session():
+            config = self.store.config()
             records = self.store.records()
-            request, warnings = resolve_features(request, catalog(self.store.config().get("scope_hierarchy", []), records))
-        return search(records, request, self.store.root, warnings)
+            request, warnings = resolve_features(request, catalog(config.get("scope_hierarchy", []), records))
+            configured_concepts = config.get("search_concepts", {})
+        return search(records, request, self.store.root, warnings, configured_concepts)
 
     def validate(self) -> dict:
         with self.store.session():
             records = self.store.records()
-            normalize_scopes(self.store.config().get("scope_hierarchy", []))
+            config = self.store.config()
+            normalize_scopes(config.get("scope_hierarchy", []))
+            normalize_search_concepts(config.get("search_concepts", {}))
             return {"valid": True, "rules": len(records)}
 
     def reindex(self) -> dict:
@@ -91,7 +97,8 @@ class MemoryService:
 
     def export(self) -> dict:
         with self.store.session():
-            return {"format": "super-memory-export", "schema_version": 1, "exported_at": now(), "rules": [record.rule for record in self.store.records()], "scope_hierarchy": self.store.config().get("scope_hierarchy", [])}
+            config = self.store.config()
+            return {"format": "super-memory-export", "schema_version": 1, "exported_at": now(), "rules": [record.rule for record in self.store.records()], "scope_hierarchy": config.get("scope_hierarchy", []), "search_concepts": config.get("search_concepts", {})}
 
     def import_bundle(self, bundle: dict, conflict: str, reason: str) -> dict:
         require_reason(reason)
@@ -106,6 +113,7 @@ class MemoryService:
                 raise MemoryError("validation_error", f"导入文件包含重复 ID：{rule['id']}")
             seen.add(rule["id"])
         scopes = normalize_scopes(bundle.get("scope_hierarchy", []))
+        concepts = normalize_search_concepts(bundle.get("search_concepts", {}))
         with self.store.session():
             existing = {record.rule["id"]: record for record in self.store.records()}
             changes, events, imported, skipped = {}, [], [], []
@@ -119,9 +127,12 @@ class MemoryService:
                 changes.update(planned)
                 events.append(event)
                 imported.append(rule["id"])
-            if scopes:
+            if scopes or "search_concepts" in bundle:
                 config = copy.deepcopy(self.store.config())
-                config["scope_hierarchy"] = scopes
+                if scopes:
+                    config["scope_hierarchy"] = scopes
+                if "search_concepts" in bundle:
+                    config["search_concepts"] = concepts
                 changes[self.store.config_path] = json_bytes(config)
             if changes:
                 self.store.commit(changes, events)

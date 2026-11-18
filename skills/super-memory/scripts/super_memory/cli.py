@@ -5,10 +5,16 @@ import json
 import sys
 from pathlib import Path
 
-from .domain import MemoryError, json_bytes
+from .domain import MemoryError, RULE_ID, json_bytes
 from .repository import RuleStore, resolve_root, write_bytes
 from .search import SearchRequest
 from .service import MemoryService
+
+
+def rule_id(value: str) -> str:
+    if not RULE_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"无效的规则 ID：{value}")
+    return value
 
 
 def parser() -> argparse.ArgumentParser:
@@ -19,14 +25,19 @@ def parser() -> argparse.ArgumentParser:
         actions.add_parser(name, help=help_text)
     get = actions.add_parser("get", help="读取完整规则及版本号")
     get.add_argument("id")
-    search = actions.add_parser("search", help="返回完整规则要求、例外及匹配依据")
+    search = argparse.ArgumentParser(add_help=False)
     search.add_argument("--query", required=True)
     search.add_argument("--project")
     for option in ("module", "feature", "path", "language", "technology"):
         search.add_argument("--" + option, action="append", default=[])
-    search.add_argument("--limit", type=int, default=8)
-    search.add_argument("--max-chars", type=int, default=16000)
+    search.add_argument("--limit", type=int, default=12)
+    search.add_argument("--max-chars", type=int, default=32000)
+    search.add_argument("--full", action="store_true", help="返回完整检索结果及诊断字段")
     search.add_argument("--include-candidates", action="store_true")
+    actions.add_parser("search", parents=[search], help="检索适用条款")
+    review = actions.add_parser("review", parents=[search], help="按实际改动检索，合并此前命中的待审条款")
+    review.add_argument("--before", type=rule_id, nargs="+", action="extend", default=[],
+                        metavar="RULE-ID", help="首轮或上一次复查清单中的规则 ID；首次检索无命中时省略")
     for name in ("create", "update", "delete"):
         action = actions.add_parser(name)
         if name != "create":
@@ -56,8 +67,17 @@ def execute(args: argparse.Namespace, service: MemoryService):
         return getattr(service, args.command)()
     if args.command == "get":
         return service.get(args.id)
-    if args.command == "search":
-        return service.search(SearchRequest(query=args.query, project=args.project, modules=tuple(args.module), languages=tuple(args.language), technologies=tuple(args.technology), limit=args.limit, max_chars=args.max_chars, include_candidates=args.include_candidates, features=tuple(args.feature), paths=tuple(args.path)))
+    if args.command in ("search", "review"):
+        result = service.search(SearchRequest(
+            query=args.query, project=args.project, modules=tuple(args.module),
+            languages=tuple(args.language), technologies=tuple(args.technology),
+            limit=args.limit, max_chars=args.max_chars, include_candidates=args.include_candidates,
+            features=tuple(args.feature), paths=tuple(args.path), compact=not args.full,
+        ))
+        if args.command == "review":
+            found = [rule["id"] for rule in result["rules"]]
+            return {"review_ids": list(dict.fromkeys([*args.before, *found])), "search": result}
+        return result
     if args.command == "create":
         return service.create(read_input(args.input), args.reason)
     if args.command == "update":
@@ -74,6 +94,9 @@ def execute(args: argparse.Namespace, service: MemoryService):
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     args = parser().parse_args(argv)
     try:
         result = execute(args, MemoryService(RuleStore(resolve_root(args.root))))

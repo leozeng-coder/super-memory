@@ -20,7 +20,7 @@ class CliTests(unittest.TestCase):
 
     def run_cli(self, *args, payload=None, success=True, extra_env=None):
         environment = {**os.environ, **(extra_env or {})}
-        process = subprocess.run([sys.executable, "-B", "-X", "utf8", str(SCRIPTS / "memory.py"), "--root", str(self.root), *args], input=json.dumps(payload, ensure_ascii=False) if payload is not None else None, capture_output=True, text=True, encoding="utf-8", env=environment)
+        process = subprocess.run([sys.executable, "-B", str(SCRIPTS / "memory.py"), "--root", str(self.root), *args], input=json.dumps(payload, ensure_ascii=False) if payload is not None else None, capture_output=True, text=True, encoding="utf-8", env=environment)
         if success:
             self.assertEqual(process.returncode, 0, process.stderr)
             return json.loads(process.stdout)
@@ -38,6 +38,59 @@ class CliTests(unittest.TestCase):
         imported = self.run_cli("import", "--input", str(output), "--reason", "测试导入")
         self.assertEqual(imported["imported"], [created["rule"]["id"]])
 
+    def test_compact_and_full_search_accept_minimal_convention(self):
+        rule = sample_rule("candidate")
+        del rule["instruction"]["avoid"], rule["rationale"], rule["exceptions"]
+        created = self.run_cli("create", "--reason", "新增项目约定", payload=rule)
+        args = ("search", "--query", "运行 Python 单元测试", "--include-candidates")
+        compact = self.run_cli(*args)["rules"][0]
+        full = self.run_cli(*args, "--full")["rules"][0]
+        self.assertEqual(compact["instruction"], rule["instruction"])
+        self.assertEqual(compact["when"], rule["trigger"]["description"])
+        self.assertEqual(compact["status"], "candidate")
+        self.assertEqual(compact["id"], full["id"])
+        self.assertTrue({"path", "score", "matched_terms", "revision", "exceptions", "relations"}.isdisjoint(compact))
+        self.assertEqual(full["revision"], created["revision"])
+        self.assertEqual(full["trigger"], rule["trigger"])
+        self.assertEqual(full["exceptions"], [])
+        self.assertEqual(self.run_cli("get", rule["id"]), created)
+
+    def test_compact_preserves_actionable_boundaries(self):
+        rule = sample_rule()
+        rule["scope"].update(languages=[], technologies=[])
+        rule["trigger"]["always_apply"] = True
+        rule["exceptions"] = [{"condition": "只改文档", "requirement": "跳过编译"}]
+        rule["relations"]["conflicts_with"] = ["RULE-OTHER"]
+        self.run_cli("create", "--reason", "测试保留边界", payload=rule)
+        row = self.run_cli("search", "--query", "unrelated")["rules"][0]
+        self.assertTrue(row["required"])
+        self.assertEqual(row["exceptions"], rule["exceptions"])
+        self.assertEqual(row["relations"], {"conflicts_with": ["RULE-OTHER"]})
+        self.assertEqual(row["instruction"], rule["instruction"])
+
+    def test_review_keeps_first_round_rules_and_checks_new_implementation_concerns(self):
+        for name, keyword in (("PLAN", "renderHeader"), ("ACTUAL", "scheduleCallback"), ("SHARED", "common")):
+            rule = sample_rule()
+            rule["id"] = "RULE-" + name
+            rule["scope"].update(languages=[], technologies=[])
+            rule["trigger"].update(keywords=[keyword], always_apply=name == "SHARED")
+            self.run_cli("create", "--reason", "测试交付前二次审查", payload=rule)
+
+        before = self.run_cli("search", "--query", "renderHeader")
+        before_ids = [rule["id"] for rule in before["rules"]]
+        self.assertCountEqual(before_ids, ["RULE-PLAN", "RULE-SHARED"])
+        result = self.run_cli("review", "--query", "scheduleCallback", "--before", *before_ids)
+        after = result["search"]
+        self.assertEqual(after, self.run_cli("search", "--query", "scheduleCallback"))
+        self.assertCountEqual([rule["id"] for rule in after["rules"]], ["RULE-ACTUAL", "RULE-SHARED"])
+        self.assertEqual(result["review_ids"], [*before_ids, "RULE-ACTUAL"])
+
+        # The fix removed the callback. Keep its rule on the checklist for rechecking.
+        revised = self.run_cli("review", "--query", "renderHeader", "--before", *result["review_ids"])
+        self.assertEqual(revised["review_ids"], result["review_ids"])
+        first_round_empty = self.run_cli("review", "--query", "scheduleCallback")
+        self.assertEqual(first_round_empty["review_ids"], [rule["id"] for rule in after["rules"]])
+
     def test_feature_catalog_and_cli_scope_arguments(self):
         rule = sample_rule()
         rule["scope"].update(level="feature", projects=["server"], modules=["svr_scene"], features=["SceneEvent"])
@@ -47,6 +100,52 @@ class CliTests(unittest.TestCase):
         result = self.run_cli("search", "--query", "新增功能", "--project", "server", "--module", "svr_scene", "--feature", "SceneEvent")
         self.assertEqual(result["rules"][0]["id"], rule["id"])
         self.assertEqual(result["context"]["features"], ["SceneEvent"])
+
+    def test_feature_previews_expand_on_demand_in_search_and_review(self):
+        for name, keyword in (("ALWAYS", "other"), ("DELAY", "DelayMs"), ("MAP", "MapUid")):
+            rule = sample_rule("candidate" if name == "MAP" else "active")
+            rule.update(id="RULE-" + name, title=keyword)
+            rule["trigger"].update(description="检查 " + keyword, keywords=[keyword], always_apply=name == "ALWAYS")
+            rule["scope"].update(level="feature", projects=["server"], modules=["scene"],
+                                 features=["SceneEvent"], languages=[], technologies=[])
+            rule["exceptions"] = [{"condition": "复用同一配置", "requirement": "保留原值"}]
+            rule["relations"]["conflicts_with"] = ["RULE-OTHER"]
+            self.run_cli("create", "--reason", "测试按需读取", payload=rule)
+
+        scope = ("--project", "server", "--module", "scene", "--feature", "SceneEvent", "--include-candidates")
+        first = self.run_cli("search", *scope, "--query", "DelayMs")
+        rows = {row["id"]: row for row in first["rules"]}
+        self.assertEqual(set(rows), {"RULE-ALWAYS", "RULE-DELAY", "RULE-MAP"})
+        preview = rows["RULE-MAP"]
+        self.assertEqual(preview["selection_reason"], ["feature_scope"])
+        self.assertTrue(preview["preview"])
+        self.assertEqual((preview["title"], preview["when"], preview["status"]), ("MapUid", "检查 MapUid", "candidate"))
+        self.assertTrue({"instruction", "exceptions", "relations"}.isdisjoint(preview))
+        for rule_id in ("RULE-ALWAYS", "RULE-DELAY"):
+            row = rows[rule_id]
+            stored = self.run_cli("get", rule_id)["rule"]
+            for key in ("instruction", "exceptions"):
+                self.assertEqual(row[key], stored[key])
+            self.assertEqual(row["relations"]["conflicts_with"], ["RULE-OTHER"])
+
+        # An explicitly unrelated ticket must not promote a preview in either round.
+        mixed = "DelayMs。历史工单提到 MapUid，与这次改动无关。"
+        self.assertEqual(self.run_cli("search", *scope, "--query", mixed), first)
+        repeat = self.run_cli("review", *scope, "--query", mixed, "--before", *rows)
+        self.assertEqual(repeat["search"], first)
+        self.assertEqual(repeat["review_ids"], list(rows))
+
+        expanded = self.run_cli("get", preview["id"])["rule"]
+        full = self.run_cli("search", *scope, "--query", "DelayMs", "--full")
+        diagnostic = next(row for row in full["rules"] if row["id"] == preview["id"])
+        self.assertEqual(diagnostic["instruction"], expanded["instruction"])
+        # The implementation actually uses MapUid now. Its rule needs the full body.
+        revised = self.run_cli("review", *scope, "--query", "MapUid", "--before", *rows)
+        self.assertEqual(revised["review_ids"], list(rows))
+        updated = {row["id"]: row for row in revised["search"]["rules"]}
+        self.assertEqual(updated["RULE-MAP"]["exceptions"], expanded["exceptions"])
+        self.assertEqual(updated["RULE-MAP"]["instruction"], expanded["instruction"])
+        self.assertTrue(updated["RULE-DELAY"]["preview"])
 
     def test_update_requires_revision_and_reports_structured_conflicts(self):
         created = self.run_cli("create", "--reason", "测试新增", payload=sample_rule())
@@ -84,9 +183,18 @@ class CliTests(unittest.TestCase):
         info = self.run_cli("info", extra_env={"SUPER_MEMORY_HOME": str(other)})
         self.assertEqual(Path(info["memory_root"]), self.root)
         environment = {**os.environ, "SUPER_MEMORY_HOME": str(other)}
-        result = subprocess.run([sys.executable, "-B", "-X", "utf8", str(SCRIPTS / "memory.py"), "info"], capture_output=True, text=True, encoding="utf-8", env=environment, check=True)
+        result = subprocess.run([sys.executable, "-B", str(SCRIPTS / "memory.py"), "info"], capture_output=True, text=True, encoding="utf-8", env=environment, check=True)
         self.assertFalse(json.loads(result.stdout)["initialized"])
         self.assertFalse(other.exists())
+
+    def test_cli_forces_utf8_even_when_inherited_encoding_is_gbk(self):
+        created = self.run_cli("create", "--reason", "测试中文编码", payload=sample_rule())
+        environment = {**os.environ, "PYTHONIOENCODING": "gbk"}
+        success = subprocess.run([sys.executable, "-B", str(SCRIPTS / "memory.py"), "--root", str(self.root), "get", created["rule"]["id"]], capture_output=True, env=environment, check=True)
+        self.assertEqual(json.loads(success.stdout.decode("utf-8"))["rule"]["title"], "运行 Python 单元测试")
+        failure = subprocess.run([sys.executable, "-B", str(SCRIPTS / "memory.py"), "--root", str(self.root), "get", "RULE-MISSING"], capture_output=True, env=environment)
+        self.assertNotEqual(failure.returncode, 0)
+        self.assertIn("找不到规则", json.loads(failure.stderr.decode("utf-8"))["error"]["message"])
 
     def test_process_exit_during_write_is_recovered_on_next_access(self):
         created = self.run_cli("create", "--reason", "测试新增", payload=sample_rule())
